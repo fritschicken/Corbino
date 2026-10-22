@@ -4,7 +4,7 @@ Numerical study of Corbino Josephson junctions: a ring-shaped normal region with
 
 The work builds on the model and code of [arXiv:2506.15502](https://arxiv.org/abs/2506.15502), *Solitonic Andreev spin qubits from Andreev states in Corbino Josephson junctions*.
 
-![Shapiro map grid](figures/shapiro_grid.png)
+![Shapiro map grid](figures/shapiro_grid_20261022-171639_setup1.png)
 
 ## Contents
 

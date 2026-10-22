@@ -471,7 +471,7 @@ function plot_shapiro_map(results; iac_cuts = (1.0, 2.0), colorrange = (0, 2), s
 end
 
 # Shapiro grid, µN rows × Δn columns:
-#   dV/dI maps of the up (switching) sweep, i_ac horizontal, i_dc vertical
+#   dV/dI maps of the up (switching) sweep, i_dc horizontal, i_ac vertical
 #   hysteresis maps |V_up − V_down| (only if any case is hysteretic)
 #   line cuts V/(hf/2e) = ⟨v⟩/Ω against i_dc at iac_cut, all µN of a Δn in one panel
 #   step histogram of each cut: i_dc width per ⟨v⟩/Ω bin, so plateaus are peaks
@@ -527,17 +527,17 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
                     (common_Ω ? "" : @sprintf(",  \$\\Omega = %s\$", latex_num(r.Ω))) *
                     (common_βc ? "" : @sprintf(",  \$\\beta_c = %s\$", latex_num(r.βc))) * (r.noise ? "  (noise)" : "")
                 ax = Axis(fig[i, j]; title = tex(tag), titlealign = :left,
-                    xlabel = i == nr && !hysteretic ? Iac_label : "", ylabel = j == 1 ? Idc_label : "",
+                    xlabel = i == nr && !hysteretic ? Idc_label : "", ylabel = j == 1 ? Iac_label : "",
                     xticklabelsvisible = i == nr && !hysteretic, yticklabelsvisible = j == 1)
-                # x = iac, y = idc (dVdI_up is idc × iac, hence the transpose)
-                hm = heatmap!(ax, r.iacs .* sc, idc_mid .* sc, r.dVdI_up'; colorrange, colormap,
+                # x = idc, y = iac (dVdI_up is idc × iac, as heatmap! expects)
+                hm = heatmap!(ax, idc_mid .* sc, r.iacs .* sc, r.dVdI_up; colorrange, colormap,
                     highclip = Makie.to_colormap(colormap)[end])
-                vlines!(ax, r.iacs[jac[i, j]] * sc; color = colors[i], linestyle = :dash, linewidth = 1.5)
+                hlines!(ax, r.iacs[jac[i, j]] * sc; color = colors[i], linestyle = :dash, linewidth = 1.5)
                 push!(map_axes, ax)
                 if hysteretic
-                    axh = Axis(fig[nr + i, j]; xlabel = i == nr ? Iac_label : "", ylabel = j == 1 ? Idc_label : "",
+                    axh = Axis(fig[nr + i, j]; xlabel = i == nr ? Idc_label : "", ylabel = j == 1 ? Iac_label : "",
                         xticklabelsvisible = i == nr, yticklabelsvisible = j == 1)
-                    hh = heatmap!(axh, r.iacs .* sc, r.idcs .* sc, (r.hyst ./ r.Ω)'; colormap = :magma)
+                    hh = heatmap!(axh, r.idcs .* sc, r.iacs .* sc, r.hyst ./ r.Ω; colormap = :magma)
                     text!(axh, 0.03, 0.97; text = tex(@sprintf("\$\\mu_N = %s\$ meV", latex_num(µ))), space = :relative,
                         align = (:left, :top), color = :white, fontsize = 12)
                     push!(map_axes, axh)

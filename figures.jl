@@ -48,7 +48,7 @@ params = merge(base_params,(;ϕ = 0, n = 1, Δ = 0.2 ,Vg = 1.5))
 # ---------------------------------------------------------------------
 cpr_settings = (; N0 = 32, N_max = 512, tol_alias = 1e-3, tol_tail = 1e-3, Ic_tol = 1e-5)
 device = (; R = 1e3, C = 1e-15, f = 20e9)       # R [Ω], C [F], drive f [Hz]; T = 0 throughout
-Vg_on = 0.0                                     # gate voltage of the Shapiro cases [meV]
+Vg_on = 1.5                                     # gate voltage of the Shapiro cases [meV]
 
 # 1: RSJ quartet baseline        (fixed normalized βc, Ω)
 # 2: capacitive control          (fixed normalized βc, Ω; Kautz 1996 Fig. 13a parameters)
