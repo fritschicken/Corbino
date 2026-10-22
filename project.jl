@@ -6,11 +6,10 @@ using Printf
 using JLD2
 using Dates
 using ColorSchemes
-import DifferentialEquations as DE
-import OrdinaryDiffEq as ODE
 using ProgressMeter
 
 includet("../arXiv_2506.15502/code.jl")
+includet("./rcsj.jl")
 
 function data_figure2(nev = 8, npoints = 30; params...)
     (; hN, ϵ1) = build(; params...);
@@ -28,6 +27,12 @@ function free_energy(h_inst, solver)
     sp = spectrum(h_inst; solver = solver)
     # E_GS = 0.5 * sum of negative BdG eigenvalues
     return 0.5 * sum(filter(<(0), real(energies(sp))))
+end
+
+# Free energy and the lowest |ε| of the same spectrum (smallest Andreev level at this φ)
+function free_energy_gap(h_inst, solver)
+    ε = real(energies(spectrum(h_inst; solver = solver)))
+    return 0.5 * sum(filter(<(0), ε)), minimum(abs, ε)
 end
 
 function fourier(F_vals, phases, max_harmonics, N)
@@ -302,22 +307,8 @@ function plot_free_energy_current(hN, cases; n0 = 0, npoints = 128, solver = ES.
 end
 
 # ---------------------------------------------------------
-# Shapiro steps: RCSJ junction driven by I_dc + I_ac sin(Ωτ)
-#   βc d²φ/dτ² + dφ/dτ + I_s(φ)/I_c = i_dc + i_ac sin(Ωτ),   V = ⟨dφ/dτ⟩
-# in units τ = 2e I_c R t/ħ, V in units of I_c R, Ω in units of 2e I_c R/ħ.
+# Shapiro steps: ground-state CPR of the ring → RSJ/RCSJ dynamics (rcsj.jl), T = 0
 # ---------------------------------------------------------
-
-# Normalized CPR I_s(φ)/I_c from Fourier harmonics, evaluated with a sin/cos recurrence
-function cpr_value(φ, I_sin, I_cos)
-    s1, c1 = sincos(φ)
-    sk, ck = s1, c1
-    acc = zero(φ)
-    for k in eachindex(I_sin)
-        acc += I_sin[k] * sk + I_cos[k] * ck
-        sk, ck = sk * c1 + ck * s1, ck * c1 - sk * s1
-    end
-    return acc
-end
 
 # Number formatted for LaTeX, e.g. 7.4e-11 → 7.4 \times 10^{-11}
 function latex_num(x; digits = 3)
@@ -327,21 +318,23 @@ function latex_num(x; digits = 3)
     return string(m[1], " \\times 10^{", m[2] == "-" ? "-" : "", m[3], "}")
 end
 
-#new implementation
-
+# F(φ) and the lowest |ε| (smallest Andreev level) on the periodic grid φ = 2πj/N.
+# Needs the full spectrum (ES.LinearAlgebra()), never shift-invert.
 function sample_F(hN, N, params; showprogress = true)
     case, solver = params
     prog = Progress(N; desc = @sprintf("CPR N = %-4d ", N), enabled = showprogress)
-    return [(F = free_energy(hN(; case..., ϕ = 2π * j / N), solver); next!(prog); F) for j in 0:N-1]
+    FE = [(x = free_energy_gap(hN(; case..., ϕ = 2π * j / N), solver); next!(prog); x) for j in 0:N-1]
+    return first.(FE), last.(FE)
 end
 
-function refine_F(hN, F_old, params; showprogress = true)
+# N → 2N by inserting the midpoints
+function refine_F(hN, F_old, E_old, params; showprogress = true)
     N = length(F_old)
     case, solver = params
     prog = Progress(N; desc = @sprintf("CPR N = %-4d ", 2N), enabled = showprogress)
-    F_new = [(F = free_energy(hN(; case..., ϕ = 2π * (j + 1/2) / N), solver); next!(prog); F) for j in 0:N-1]
-    F = collect(Iterators.flatten(zip(F_old, F_new)))
-    return F
+    FE = [(x = free_energy_gap(hN(; case..., ϕ = 2π * (j + 1/2) / N), solver); next!(prog); x) for j in 0:N-1]
+    interleave(old, new) = collect(Iterators.flatten(zip(old, new)))
+    return interleave(F_old, first.(FE)), interleave(E_old, last.(FE))
 end
 
 function current_harmonics(F)
@@ -362,17 +355,16 @@ function current_harmonics(F)
     return I_sin, I_cos
 end
 
-cpr_max(s, c; ngrid = 2001) = maximum(φ -> abs(cpr_value(φ, s, c)), range(0, 2π, ngrid))
-
+# Returns the current harmonics (code units), F(φ) and the smallest Andreev level min_φ min|ε| [meV]
 function converged_cpr(hN, params, N0, N_max, tol_alias, tol_tail; showprogress = true)
     N0 ≥ 3 || throw(ArgumentError("N0 must be ≥ 3 to resolve at least one harmonic"))
-    F = sample_F(hN, N0, params; showprogress)
+    F, E = sample_F(hN, N0, params; showprogress)
     (s, c) = current_harmonics(F)
     Ic_est = cpr_max(s, c)
     converged = false
     while 2 * length(F) <= N_max
         (s_old, c_old) = (s, c)
-        F = refine_F(hN, F, params; showprogress)
+        F, E = refine_F(hN, F, E, params; showprogress)
         (s, c) = current_harmonics(F)
         Ic_est = cpr_max(s, c)
         kold = length(s_old)
@@ -387,7 +379,7 @@ function converged_cpr(hN, params, N0, N_max, tol_alias, tol_tail; showprogress 
     end
     converged || @warn @sprintf("CPR not converged at N = %d: probably a kink (zero-energy crossing)", length(F))
     kmax = something(findlast(≥(tol_tail * Ic_est), hypot.(s, c)), 1)
-    return s[1:kmax], c[1:kmax], F
+    return s[1:kmax], c[1:kmax], F, minimum(E)
 end
 
 function normalize_cpr(s, c; Ic_tol = 1e-6)
@@ -397,101 +389,34 @@ function normalize_cpr(s, c; Ic_tol = 1e-6)
     return s ./ Ic, c ./ Ic, Ic
 end
 
-# RCSJ reduced parameters of a physical device (R [Ω], C [F], drive f [Hz], T [K]) for a code-unit
-# critical current Ic (I = 2∂F/∂φ with F in meV, e = ħ = 1, so 1 unit = (e/ħ)·1 meV ≈ 243 nA)
-function rcsj_units(Ic; R, C, f, T = 0.0)
-    e, ħ, h, kB = 1.602176634e-19, 1.054571817e-34, 6.62607015e-34, 1.380649e-23
-    Ic_A = Ic * (e / ħ) * (1e-3 * e)
-    ωc = 2e * Ic_A * R / ħ                       # characteristic frequency 2e Ic R / ħ
-    ωp = sqrt(2e * Ic_A / (ħ * C))               # plasma frequency
-    EJ = ħ * Ic_A / 2e                           # Josephson energy [J]
-    return (; βc = ωc * R * C, Ω = 2π * f / ωc, Γ = kB * T / EJ,
-        Ic_A, IcR = Ic_A * R, fc = ωc / 2π, fp = ωp / 2π, EJ_K = EJ / kB, hf_meV = h * f / e * 1e3)
-end
-
-function print_rcsj_units(label, Ic; device...)
-    u = rcsj_units(Ic; device...)
-    println(@sprintf("%s: Ic = %.3g nA, IcR = %.3g µV, fc = %.3g GHz, fp = %.3g GHz, EJ = %.3g mK",
-        label, u.Ic_A * 1e9, u.IcR * 1e6, u.fc * 1e-9, u.fp * 1e-9, u.EJ_K * 1e3))
-    println(@sprintf("    → βc = %.3g, Ω = %.3g, Γ = kT/EJ = %.3g, hf = %.3g meV", u.βc, u.Ω, u.Γ, u.hf_meV))
-    return u
-end
-
-function rcsj(u, p, t)
-    φ, v = u
-    return SVector(v, (p.idc + p.iac * sin(p.Ω * t) - cpr_value(φ, p.s, p.c) - v) / p.βc)
-end
-
-rsj(φ, p, t) = p.idc + p.iac * sin(p.Ω * t) - cpr_value(φ, p.s, p.c)
-
-function bias_point(u_in, p; nper_skip_min = 10, nper_avg, reltol = 1e-8, abstol = 1e-8,
-        alg = DE.AutoVern7(DE.Rodas5P()), rsj_alg = DE.Tsit5())
-    T = 2pi / p.Ω
-    nper_skip = max(nper_skip_min, ceil(Int, 10 * p.βc * p.Ω / 2π))
-    t_skip = nper_skip * T
-    t_end = (nper_skip + nper_avg) * T
-    φ0, v0 = u_in
-    if iszero(p.βc)
-        prob = DE.ODEProblem(rsj, mod2pi(φ0), (0.0, t_end), p)
-        sol = DE.solve(prob, rsj_alg; saveat = [t_skip, t_end], reltol, abstol, maxiters = 10^7)
-        v_dc = (sol.u[end] - sol.u[1]) / (t_end - t_skip)
-        return v_dc, (sol.u[end], rsj(sol.u[end], p, t_end))
+# One microscopic case p (all Hamiltonian parameters): converged CPR (computed once), then the Shapiro map.
+#   scaling = :fixed     βc, drive.Ω, drive.idcs, drive.iacs are used as given (normalized units)
+#   scaling = :physical  βc and Ω follow from this case's own I_c and device = (; R, C, f);
+#                        drive = (; Idcs_uA, Iacs_uA) in µA, converted to this case's normalized i
+# adiabatic_ratio: warn if hf > adiabatic_ratio × smallest Andreev level (equilibrium-CPR assumption)
+function shapiro_case(hN, p, solver; cpr_settings, drive, bias, βc = 0.0, scaling = :fixed, device = nothing,
+        adiabatic_ratio = 0.5, label = "")
+    (; N0, N_max, tol_alias, tol_tail, Ic_tol) = cpr_settings
+    s, c, F, Emin = converged_cpr(hN, (p, solver), N0, N_max, tol_alias, tol_tail)
+    s, c, Ic = normalize_cpr(s, c; Ic_tol)
+    Ic_A = Ic * I_UNIT_A
+    if scaling == :physical
+        u = print_rcsj_units(label, Ic; device...)
+        (; βc, Ω) = u
+        idcs = drive.Idcs_uA ./ (1e6 * Ic_A)
+        iacs = drive.Iacs_uA ./ (1e6 * Ic_A)
+        println(@sprintf("    smallest Andreev level min|ε| = %.3g meV, hf = %.3g meV", Emin, u.hf_meV))
+        u.hf_meV > adiabatic_ratio * Emin && @warn @sprintf(
+            "%s: hf = %.3g meV is not well below the smallest Andreev level %.3g meV: the equilibrium (adiabatic) CPR is questionable",
+            label, u.hf_meV, Emin)
+    elseif scaling == :fixed
+        (; Ω, idcs, iacs) = drive
+        println(@sprintf("%s: Ic = %.3g (code units) = %.3g nA, βc = %g, Ω = %g", label, Ic, Ic_A * 1e9, βc, Ω))
+    else
+        throw(ArgumentError("scaling must be :fixed or :physical"))
     end
-    prob = DE.ODEProblem(rcsj, SVector(mod2pi(φ0), v0), (0.0, t_end), p)   # wrap φ only between solves
-    sol = DE.solve(prob, alg; saveat = [t_skip, t_end], reltol, abstol, maxiters = 10^7)
-    v_dc = (sol.u[end][1] - sol.u[1][1]) / (t_end - t_skip)
-    return v_dc, (sol.u[end][1], sol.u[end][2])
-end
-
-function sweep_column(iac, s, c; Ω, βc, idcs, bias...)
-    V_up = zeros(length(idcs))
-    V_down = zeros(length(idcs))
-    u = (0.0, 0.0)
-    for i in eachindex(idcs)
-        p = (; idc = idcs[i], iac, Ω, βc, s, c)
-        V_up[i], u = bias_point(u, p; bias...)
-    end
-    
-    if iszero(βc)
-        V_down .= V_up
-        return V_up, V_down
-    end
-    for i in reverse(eachindex(idcs)) 
-        p = (; idc = idcs[i], iac, Ω, βc, s, c)
-        V_down[i], u = bias_point(u, p; bias...)
-    end
-    return V_up, V_down
-end
-
-# Full map, parallel over iac columns
-function shapiro_map(s, c; Ω = 0.5, βc = 1.0, idcs = range(0, 3, 151), iacs = range(0, 4, 101),
-        nper_avg = 30, showprogress = true, bias...)
-    V_up = zeros(length(idcs), length(iacs))
-    V_down = zeros(length(idcs), length(iacs))
-    prog = Progress(length(iacs); desc = @sprintf("Shapiro map (βc = %g) ", βc), enabled = showprogress)
-    Threads.@threads for j in eachindex(iacs)
-        V_up[:, j], V_down[:, j] = sweep_column(iacs[j], s, c; Ω, βc, idcs, nper_avg, bias...)
-        next!(prog)                                      # thread-safe
-    end
-    dVdI_up = diff(V_up, dims = 1) ./ step(idcs)
-    dVdI_down = diff(V_down, dims = 1) ./ step(idcs)
-    hyst = abs.(V_up .- V_down)
-    return (; idcs, iacs, V_up, V_down, dVdI_up, dVdI_down, hyst, Ω, βc)
-end
-
-function shapiro_cases(hN, cases; n0 = 0, solver = ES.LinearAlgebra(),
-        N0 = 16, N_max = 512, tol_alias = 1e-4, tol_tail = 1e-3, Ic_tol = 1e-6,
-        Ω = 0.5, βc = 0.0, idcs = range(0, 3, 151), iacs = range(0, 4, 101), bias = (;), params...)
-    return map(cases) do case
-        (; Δn, Vg) = case
-        overrides = Base.structdiff(case, NamedTuple{(:Δn,)})
-        println(@sprintf("RCSJ Shapiro map for Δn = %g, Vg = %g meV ...", Δn, Vg))
-        p = (; params..., overrides..., n0, n = n0 + Δn)
-        s, c, F = converged_cpr(hN, (p, solver), N0, N_max, tol_alias, tol_tail)
-        s, c, Ic = normalize_cpr(s, c; Ic_tol)
-        m = shapiro_map(s, c; Ω, βc, idcs, iacs, bias...)
-        (; case, F, s, c, Ic, noise = Ic < Ic_tol, m...)
-    end
+    m = shapiro_map(s, c; Ω, βc, idcs, iacs, bias...)
+    return (; F, s, c, Ic, Ic_A, Emin, noise = Ic < Ic_tol, scaling, m...)
 end
 
 #mr claude's plotting IDK what happens here and 
@@ -545,76 +470,122 @@ function plot_shapiro_map(results; iac_cuts = (1.0, 2.0), colorrange = (0, 2), s
     return fig
 end
 
-function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, colorrange = (0, 2), colormap = :Blues,
-        savepath = nothing)
+# Shapiro grid, µN rows × Δn columns:
+#   dV/dI maps of the up (switching) sweep, i_ac horizontal, i_dc vertical
+#   hysteresis maps |V_up − V_down| (only if any case is hysteretic)
+#   line cuts V/(hf/2e) = ⟨v⟩/Ω against i_dc at iac_cut, all µN of a Δn in one panel
+#   step histogram of each cut: i_dc width per ⟨v⟩/Ω bin, so plateaus are peaks
+# units = :normalized → currents in units of each case's I_c
+# units = :physical   → currents in µA (i × I_c) on shared axes (one sample, one microwave power); iac_cut in µA
+function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalized, colorrange = (0, 2),
+        colormap = :Blues, binwidth = 0.02, savepath = nothing)
     µs, Δns = [µs...], [Δns...]
     results = reshape(results, length(µs), length(Δns))
     nr, nc = size(results)
-    (; Ω, βc, iacs, idcs) = first(results)
-    jac = argmin(abs.(iacs .- iac_cut))
+    physical = units == :physical
+    scale(r) = physical ? 1e6 * r.Ic_A : 1.0                           # normalized i → plotted current
+    jac = map(r -> argmin(abs.(r.iacs .* scale(r) .- iac_cut)), results)  # cut column of each case
+    w_up(k) = results[k].V_up[:, jac[k]] ./ results[k].Ω
+    w_dn(k) = results[k].V_down[:, jac[k]] ./ results[k].Ω
     colors = Makie.wong_colors()                                      # fixed order: µN index → color
-    # Ω can differ per case (device units): every V is divided by its own case's Ω
-    hysteretic = any(r -> maximum(r.hyst[:, jac]) > 1e-3 * r.Ω, results)
-    # V/Ω range over both sweeps; negative when the idc grid includes negative bias
-    Vmax = ceil(maximum(r -> max(maximum(r.V_up[:, jac]), maximum(r.V_down[:, jac])) / r.Ω, results))
-    Vmin = min(0.0, floor(minimum(r -> min(minimum(r.V_up[:, jac]), minimum(r.V_down[:, jac])) / r.Ω, results)))
-    Vstep = (Vmax - Vmin) > 10 ? 2 : 1
+    hysteretic = any(r -> maximum(r.hyst) > 1e-3 * r.Ω, results)
+    nmap = hysteretic ? 2nr : nr
+    Vmax = ceil(maximum(k -> max(maximum(w_up(k)), maximum(w_dn(k))), eachindex(results)))
+    Vmin = min(0.0, floor(minimum(k -> min(minimum(w_up(k)), minimum(w_dn(k))), eachindex(results))))
+    # major ticks every 1 (labels thinned for wide ranges), minor grid at 0.5
+    Vlab = max(1, ceil(Int, (Vmax - Vmin) / 12))
+    vticks = (Vmin:Vmax, [rem(round(Int, k), Vlab) == 0 ? @sprintf("%d", k) : "" for k in Vmin:Vmax])
     tex(str) = Makie.LaTeXString(str)
+    Idc_label, Iac_label = physical ? (L"I_\text{dc} \; [\mu\text{A}]", L"I_\text{ac} \; [\mu\text{A}]") :
+        (L"I_\text{dc}/I_c", L"I_\text{ac}/I_c")
+    V_label = L"V/(hf/2e)"
 
     fig = with_theme(theme_latexfonts(); fontsize = 15,
             Axis = (; xgridvisible = false, ygridvisible = false, xticksmirrored = true, yticksmirrored = true,
                 xtickalign = 1, ytickalign = 1, xminorticksvisible = true, yminorticksvisible = true, xminortickalign = 1,
                 yminortickalign = 1, titlefont = :regular, titlesize = 15)) do
-        fig = Figure(size = (400 * nc + 110, 300 * nr + 330), figure_padding = (10, 15, 10, 10))
-        # Ω and βc can differ per case (device units): in the header only if common to all cases, else per map
+        fig = Figure(size = (400 * nc + 110, 300 * nmap + 560), figure_padding = (10, 15, 10, 10))
+        # Ω and βc differ per case with scaling = :physical: in the header only if common to all cases, else per map
+        (; Ω, βc) = first(results)
         common_Ω = all(r -> r.Ω == Ω, results)
         common_βc = all(r -> r.βc == βc, results)
         header = "RCSJ Shapiro response" *
             (common_Ω ? @sprintf(",  \$\\Omega = %s\$", latex_num(Ω)) : "") *
             (common_βc ? @sprintf(",  \$\\beta_c = %s\$", latex_num(βc)) : "")
-        Label(fig[0, 1:nc], tex(header);
-            fontsize = 17, tellwidth = false)
-        hm = nothing
+        Label(fig[0, 1:nc], tex(header); fontsize = 17, tellwidth = false)
+        hm = hh = nothing
+        map_axes = Axis[]
         cut_axes = Axis[]
+        hist_axes = Axis[]
         for (j, Δn) in enumerate(Δns)
-            map_axes = map(enumerate(µs)) do (i, µ)
+            for (i, µ) in enumerate(µs)
                 r = results[i, j]
+                sc = scale(r)
                 idc_mid = (r.idcs[1:end-1] .+ r.idcs[2:end]) ./ 2
-                tag = @sprintf("\$\\mu_N = %s\$ meV,  \$I_c = %s\$", latex_num(µ), latex_num(r.Ic)) *
+                # physical I_c (the normalized one is always 1)
+                tag = @sprintf("\$\\mu_N = %s\$ meV,  \$I_c = %s\$ nA", latex_num(µ), latex_num(1e9 * r.Ic_A)) *
                     (common_Ω ? "" : @sprintf(",  \$\\Omega = %s\$", latex_num(r.Ω))) *
                     (common_βc ? "" : @sprintf(",  \$\\beta_c = %s\$", latex_num(r.βc))) * (r.noise ? "  (noise)" : "")
                 ax = Axis(fig[i, j]; title = tex(tag), titlealign = :left,
-                    xlabel = i == nr ? L"I_\text{dc}/I_c" : "", ylabel = j == 1 ? L"I_\text{ac}/I_c" : "",
-                    xticklabelsvisible = i == nr, yticklabelsvisible = j == 1)
-                # x = idc, y = iac (dVdI_up is idc × iac, so no transpose)
-                hm = heatmap!(ax, idc_mid, r.iacs, r.dVdI_up; colorrange, colormap, highclip = Makie.to_colormap(colormap)[end])
-                hlines!(ax, r.iacs[jac]; color = colors[i], linestyle = :dash, linewidth = 1.5)
-                ax
+                    xlabel = i == nr && !hysteretic ? Iac_label : "", ylabel = j == 1 ? Idc_label : "",
+                    xticklabelsvisible = i == nr && !hysteretic, yticklabelsvisible = j == 1)
+                # x = iac, y = idc (dVdI_up is idc × iac, hence the transpose)
+                hm = heatmap!(ax, r.iacs .* sc, idc_mid .* sc, r.dVdI_up'; colorrange, colormap,
+                    highclip = Makie.to_colormap(colormap)[end])
+                vlines!(ax, r.iacs[jac[i, j]] * sc; color = colors[i], linestyle = :dash, linewidth = 1.5)
+                push!(map_axes, ax)
+                if hysteretic
+                    axh = Axis(fig[nr + i, j]; xlabel = i == nr ? Iac_label : "", ylabel = j == 1 ? Idc_label : "",
+                        xticklabelsvisible = i == nr, yticklabelsvisible = j == 1)
+                    hh = heatmap!(axh, r.iacs .* sc, r.idcs .* sc, (r.hyst ./ r.Ω)'; colormap = :magma)
+                    text!(axh, 0.03, 0.97; text = tex(@sprintf("\$\\mu_N = %s\$ meV", latex_num(µ))), space = :relative,
+                        align = (:left, :top), color = :white, fontsize = 12)
+                    push!(map_axes, axh)
+                end
             end
-            linkaxes!(map_axes...)
             Label(fig[1, j, Top()], tex(@sprintf("\$\\Delta n = %g\$", Δn)); fontsize = 17, padding = (0, 0, 28, 0))
 
             # line cuts: all µN for this Δn in one panel
-            r1 = results[1, j]
-            axc = Axis(fig[nr + 1, j]; xlabel = L"I_\text{dc}/I_c", ylabel = j == 1 ? L"V/\Omega" : "",
-                yticks = Vmin:Vstep:Vmax, yminorticks = Vmin:0.5:Vmax, yticklabelsvisible = j == 1,
-                ygridvisible = true, ygridcolor = (:black, 0.12), yminorgridvisible = true, yminorgridcolor = (:black, 0.05))
+            axc = Axis(fig[nmap + 1, j]; xlabel = Idc_label, ylabel = j == 1 ? V_label : "",
+                yticks = vticks, yminorticks = Vmin:0.5:Vmax, yticklabelsvisible = j == 1,
+                ygridvisible = true, ygridcolor = (:black, 0.15), yminorgridvisible = true, yminorgridcolor = (:black, 0.06))
+            # step histogram: i_dc width falling in each ⟨v⟩/Ω bin (bins centred on multiples of binwidth)
+            axs = Axis(fig[nmap + 2, j]; xlabel = V_label, ylabel = j == 1 ? (physical ? L"\Delta I_\text{dc} \; [\mu\text{A}]" :
+                L"\Delta I_\text{dc}/I_c") : "", xticks = vticks, xminorticks = Vmin:0.5:Vmax,
+                xgridvisible = true, xgridcolor = (:black, 0.15), xminorgridvisible = true, xminorgridcolor = (:black, 0.06))
+            edges = (Vmin - binwidth / 2):binwidth:(Vmax + binwidth / 2)
             for (i, µ) in enumerate(µs)
                 r = results[i, j]
-                lines!(axc, r.idcs, r.V_up[:, jac] ./ r.Ω; color = (colors[i], hysteretic ? 0.5 : 1.0), linewidth = 2.5,
-                    label = tex(@sprintf("\$\\mu_N = %s\$ meV", latex_num(µ))))
+                k = LinearIndices(results)[i, j]
+                idcs = r.idcs .* scale(r)
+                lines!(axc, idcs, w_up(k); color = (colors[i], hysteretic ? 0.5 : 1.0), linewidth = 2.5)
                 # down sweep thin and opaque on top of the translucent up sweep, so it stays visible where they overlap
-                hysteretic && lines!(axc, r.idcs, r.V_down[:, jac] ./ r.Ω; color = colors[i], linewidth = 1.3, linestyle = :dash)
+                hysteretic && lines!(axc, idcs, w_dn(k); color = colors[i], linewidth = 1.3, linestyle = :dash)
+                for (w, style) in ((w_up(k), :solid), (w_dn(k), :dash))
+                    style == :dash && !hysteretic && continue
+                    widths = zeros(length(edges) - 1)
+                    for x in w
+                        b = searchsortedlast(edges, x)
+                        1 ≤ b < length(edges) && (widths[b] += step(idcs))
+                    end
+                    stairs!(axs, collect(edges), [widths; widths[end]]; step = :post, color = colors[i],
+                        linewidth = style == :solid ? 1.8 : 1.2, linestyle = style)
+                end
             end
-            xlims!(axc, extrema(r1.idcs)...)
+            xlims!(axc, extrema(results[1, j].idcs .* scale(results[1, j]))...)
             ylims!(axc, Vmin - 0.1, Vmax + 0.1)
-            linkxaxes!(axc, map_axes...)                         # same idc axis: step edges line up with the cut
+            xlims!(axs, Vmin - 0.1, Vmax + 0.1)
+            ylims!(axs, 0, nothing)
             push!(cut_axes, axc)
+            push!(hist_axes, axs)
         end
-        linkyaxes!(cut_axes...)
+        linkaxes!(map_axes...)
+        linkaxes!(cut_axes...)
+        linkaxes!(hist_axes...)
 
         Colorbar(fig[1:nr, nc + 1], hm; label = L"\mathrm{d}V/\mathrm{d}I \; [R]", width = 12, ticksize = 4)
-        # legend below the cuts: µN identity (only if > 1) plus sweep direction (only if hysteretic)
+        hysteretic && Colorbar(fig[nr+1:2nr, nc + 1], hh; label = L"|V_\uparrow - V_\downarrow| / (hf/2e)", width = 12, ticksize = 4)
+        # legend below: µN identity (only if > 1) plus sweep direction (only if hysteretic)
         entries, labels = Any[], Any[]
         if nr > 1
             append!(entries, [LineElement(color = colors[i], linewidth = 2) for i in 1:nr])
@@ -622,16 +593,19 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, colorrange = (0, 2
         end
         if hysteretic
             append!(entries, [LineElement(color = (:gray30, 0.5), linewidth = 2.5), LineElement(color = :gray30, linewidth = 1.3, linestyle = :dash)])
-            append!(labels, ["sweep up", "sweep down"])
+            append!(labels, ["sweep up (switching)", "sweep down (retrapping)"])
         end
-        Label(fig[nr + 1, 1:nc, Top()], tex(@sprintf("line cut at \$I_\\text{ac}/I_c = %s\$", latex_num(iacs[jac])));
-            padding = (0, 0, 6, 0), fontsize = 14, halign = :left, tellwidth = false)
-        isempty(entries) || Legend(fig[nr + 2, 1:nc], entries, labels; orientation = :horizontal,
+        iac_cuts = unique(round.([r.iacs[jac[k]] * scale(r) for (k, r) in pairs(results)]; sigdigits = 3))
+        cut_text = physical ? @sprintf("line cut at \$I_\\text{ac} = %s\\;\\mu\$A", join(latex_num.(iac_cuts), ", ")) :
+            @sprintf("line cut at \$I_\\text{ac}/I_c = %s\$", join(latex_num.(iac_cuts), ", "))
+        Label(fig[nmap + 1, 1:nc, Top()], tex(cut_text); padding = (0, 0, 6, 0), fontsize = 14, halign = :left, tellwidth = false)
+        isempty(entries) || Legend(fig[nmap + 3, 1:nc], entries, labels; orientation = :horizontal,
             framevisible = false, labelsize = 13, tellheight = true, tellwidth = false)
-        rowsize!(fig.layout, nr + 1, Relative(0.8 / (nr + 1)))
+        rowsize!(fig.layout, nmap + 1, Relative(0.8 / (nmap + 2)))
+        rowsize!(fig.layout, nmap + 2, Relative(0.6 / (nmap + 2)))
         rowgap!(fig.layout, 8)
         colgap!(fig.layout, 32)
-        rowgap!(fig.layout, nr, 16)
+        rowgap!(fig.layout, nmap, 16)
         fig
     end
 
@@ -657,13 +631,15 @@ function save_shapiro_run(results, µs, Δns; meta = (;), label = "", dir = SHAP
     isfile(joinpath(dir, id * ".jld2")) && (id *= "-" * string(rand(UInt16), base = 16))
     r1 = first(results)
     # ASCII keys in the file (Julia folds µ/μ in identifiers, which would break string lookup)
+    # per case (they differ with scaling = :physical): code-unit and physical Ic, βc, Ω
+    per_case = map(r -> (; Ic = r.Ic, Ic_A = r.Ic_A, βc = r.βc, Ω = r.Ω, Emin = r.Emin), vec(results))
     jldsave(joinpath(dir, id * ".jld2"); id, date = string(now()), label, results, mus = [µs...], dns = [Δns...],
-        meta = merge(meta, (; Ω = r1.Ω, βc = r1.βc)))
+        meta = merge(meta, (; per_case)))
     index = joinpath(dir, "index.csv")
     isfile(index) || write(index, "id,date,label,Δn,µN,Ω,βc,n_idc,n_iac,Ic\n")
+    join_g(f) = join(map(r -> @sprintf("%.3g", f(r)), vec(results)), " ")
     row = (id, Dates.format(now(), "yyyy-mm-dd HH:MM"), label, fmt_values(Δns), fmt_values(µs),
-        @sprintf("%g", r1.Ω), @sprintf("%g", r1.βc), length(r1.idcs), length(r1.iacs),
-        join(map(r -> @sprintf("%.3g", r.Ic), results), " "))
+        join_g(r -> r.Ω), join_g(r -> r.βc), length(r1.idcs), length(r1.iacs), join_g(r -> r.Ic))
     open(io -> println(io, join(map(csv_field, row), ",")), index, "a")
     println("saved Shapiro run ", id)
     return id
