@@ -33,7 +33,7 @@ parent/
 └── arXiv_2506.15502/    ← git clone https://github.com/pablosanjose/arXiv_2506.15502
 ```
 
-Julia 1.10 or newer. The exact package versions, including those needed by the arXiv code, are recorded in `Project.toml` and `Manifest.toml`. To install them, run this from this folder:
+Julia 1.13 (the `Manifest.toml` was generated with it; older versions may need `] resolve`). The exact package versions, including those needed by the arXiv code, are recorded in `Project.toml` and `Manifest.toml`. To install them, run this from this folder:
 
 ```
 julia --project
