@@ -1,0 +1,145 @@
+# =====================================================================
+# INPUTS
+#   case        : microscopic parameters (Δn, Vg, µ, n0, ...)
+#   N0          : initial number of phase points (e.g. 16)
+#   N_max       : cap on phase points (e.g. 512)
+#   tol_alias   : allowed change of low harmonics between N and 2N (e.g. 1e-4 · Ic)
+#   tol_tail    : harmonic cutoff relative to Ic (e.g. 1e-3)
+#   Ω, β        : reduced drive frequency, McCumber parameter
+#   idcs, iacs  : bias grids
+#   nper_skip, nper_avg : transient / averaging length in drive periods
+# =====================================================================
+
+
+# ---------------------------------------------------------------------
+# 1. Free energy on a periodic grid, refined by doubling
+# ---------------------------------------------------------------------
+function sample_F(case, N)
+    φ_j = 2π · j / N   for j = 0 … N-1          # no duplicate 2π point
+    return [ free_energy(H(case, φ_j)) for each φ_j ]   # FULL spectrum solver
+
+function refine_F(F_old, case)                   # N → 2N, reuse old values
+    N = length(F_old)
+    F_new_pts = [ free_energy(H(case, 2π·(j + 1/2)/N)) for j = 0 … N-1 ]
+    F = empty vector of length 2N
+    F[even slots] = F_old                         # φ = 2π·j/N
+    F[odd slots]  = F_new_pts                     # midpoints
+    return F
+
+
+# ---------------------------------------------------------------------
+# 2. Current harmonics from F (DFT / rfft or your `fourier`)
+# ---------------------------------------------------------------------
+function current_harmonics(F)
+    N    = length(F)
+    kmax = (N - 1) ÷ 2                            # exclude Nyquist
+    A_k, B_k = DFT coefficients of F for k = 1 … kmax
+    I_sin[k] = -2 · k · A_k                       # I = 2 ∂F/∂φ  (ħ = e = 1)
+    I_cos[k] =  2 · k · B_k
+    return I_sin, I_cos
+
+
+# ---------------------------------------------------------------------
+# 3. Adaptive loop: double N until harmonics are converged
+# ---------------------------------------------------------------------
+function converged_cpr(case; N0, N_max, tol_alias, tol_tail)
+    F = sample_F(case, N0)
+    (s_old, c_old) = current_harmonics(F)
+    loop
+        if 2·length(F) > N_max
+            warn("not converged: CPR probably has a kink (zero-energy crossing)")
+            break
+        F = refine_F(F, case)
+        (s, c) = current_harmonics(F)
+        Ic_est = max_φ |Σ s_k sin kφ + c_k cos kφ|
+        k_old  = length(s_old)
+        alias_change = max_k≤k_old ( |s_k - s_old_k| + |c_k - c_old_k| )
+        tail         = max_k>k_old ( hypot(s_k, c_k) )
+        (s_old, c_old) = (s, c)
+        if alias_change < tol_alias · Ic_est  and  tail < tol_tail · Ic_est
+            break
+    # choose truncation from the amplitude tail
+    k_max = largest k with hypot(s_k, c_k) ≥ tol_tail · Ic_est
+    return s[1:k_max], c[1:k_max], F
+
+
+# ---------------------------------------------------------------------
+# 4. Normalized CPR
+# ---------------------------------------------------------------------
+function normalize(s, c)
+    Ic = max over fine φ grid (e.g. 2001 pts) of |cpr_value(φ, s, c)|
+    if Ic < Ic_tol:  warn("Ic is numerical noise")
+    return s / Ic, c / Ic, Ic                     # now max |f(φ)| = 1
+
+
+# ---------------------------------------------------------------------
+# 5. RCSJ right-hand side      u = (φ, v),  v = dφ/dτ
+# ---------------------------------------------------------------------
+function rcsj(u, p, τ)
+    φ, v = u
+    dφ = v
+    dv = ( p.idc + p.iac · sin(p.Ω · τ) - cpr_value(φ, p.s, p.c) - v ) / p.β
+    return (dφ, dv)
+
+
+# ---------------------------------------------------------------------
+# 6. One bias point: state in → dc voltage, state out
+# ---------------------------------------------------------------------
+function bias_point(u_in, p; nper_skip_min = 10, nper_avg)
+    T         = 2π / p.Ω
+    nper_skip = max( nper_skip_min, ceil( 10 · p.β · p.Ω / 2π ) )   # ≥ 10 damping times
+    τ_skip    = nper_skip · T
+    τ_end     = (nper_skip + nper_avg) · T        # integer # of periods
+    u0        = ( mod2pi(u_in.φ), u_in.v )        # wrap φ only between solves
+    sol       = solve ODE rcsj from u0 on [0, τ_end], save at [τ_skip, τ_end]
+    v_dc      = ( φ(τ_end) - φ(τ_skip) ) / ( τ_end - τ_skip )
+    return v_dc, sol(τ_end)
+
+
+# ---------------------------------------------------------------------
+# 7. One column: sweep idc up, then down, with continuation
+# ---------------------------------------------------------------------
+function sweep_column(iac, s, c; Ω, β, idcs)
+    u = (0, 0)
+    for i in 1 … length(idcs)                     # UP
+        p = (idc = idcs[i], iac, Ω, β, s, c)
+        V_up[i], u = bias_point(u, p)
+    for i in length(idcs) … 1                     # DOWN, start from top state
+        p = (idc = idcs[i], iac, Ω, β, s, c)
+        V_down[i], u = bias_point(u, p)
+    return V_up, V_down
+
+
+# ---------------------------------------------------------------------
+# 8. Full map: parallel over iac columns
+# ---------------------------------------------------------------------
+function shapiro_map(s, c; Ω, β, idcs, iacs)
+    parallel for j in 1 … length(iacs)            # Threads.@threads
+        V_up[:, j], V_down[:, j] = sweep_column(iacs[j], s, c; Ω, β, idcs)
+    dVdI_up   = diff(V_up,   along idc) / Δidc
+    dVdI_down = diff(V_down, along idc) / Δidc
+    hyst      = |V_up - V_down|
+    return V_up, V_down, dVdI_up, dVdI_down, hyst
+
+
+# ---------------------------------------------------------------------
+# 9. Driver: one map per microscopic case
+# ---------------------------------------------------------------------
+for case in cases
+    s, c, F   = converged_cpr(case; ...)          # once per case
+    s, c, Ic  = normalize(s, c)
+    map       = shapiro_map(s, c; Ω, β, idcs, iacs)
+    plot:
+        heatmap of dVdI_up (and dVdI_down) over (iac, idc)
+        heatmap of hyst
+        line cuts V/Ω vs idc at chosen iac, up and down together
+        (y ticks every 0.5 → integer = 2e, half-integer = 4e/subharmonic)
+
+
+# ---------------------------------------------------------------------
+# 10. Validation (run with s = [1], c = [0], i.e. f = sin φ)
+# ---------------------------------------------------------------------
+test A: iac = 0, β = 5      → switch at idc ≈ 1 (up), retrap ≈ 4/(π√β) ≈ 0.57 (down)
+test B: β = 1e-2            → reproduces your old RSJ map
+test C: Ω = 5, small β      → step widths ≈ 2 |J_n(iac/Ω)|
+test D: s = [0, 1]          → plateaus only at multiples of Ω/2Pi_r
