@@ -33,20 +33,18 @@ parent/
 └── arXiv_2506.15502/    ← git clone https://github.com/pablosanjose/arXiv_2506.15502
 ```
 
-Julia 1.10 or newer, plus these packages:
+Julia 1.10 or newer. The exact package versions, including those needed by the arXiv code, are recorded in `Project.toml` and `Manifest.toml`. To install them, run this from this folder:
 
-```julia
-using Pkg
-Pkg.add(["Quantica", "GLMakie", "CairoMakie", "StaticArrays", "LinearMaps",
-         "ArnoldiMethod", "Arpack", "JLD2", "ColorSchemes", "ProgressMeter",
-         "DifferentialEquations", "OrdinaryDiffEq", "Revise"])
+```
+julia --project
+] instantiate
 ```
 
-`Revise` is needed because the files are loaded with `includet`.
+`Revise` is included because the files are loaded with `includet`.
 
 ## Usage
 
-Start Julia from this folder and run:
+Start Julia from this folder with `julia --project` and run:
 
 ```julia
 using Revise
