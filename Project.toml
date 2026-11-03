@@ -1,6 +1,5 @@
 [deps]
 ArnoldiMethod = "ec485272-7323-5ecc-a04f-4719b315124d"
-Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 ChunkSplitters = "ae650224-84b6-46f8-82ea-d812ca08434e"
 ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"

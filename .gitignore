@@ -1,3 +1,5 @@
 .DS_Store
-nnzv-7nqy.pdf
 data/
+figures/
+*.pdf
+*.txt

@@ -92,7 +92,8 @@ function bias_point(u_in, p; nper_skip_min = 20, nper_avg, reltol = 1e-8, abstol
     end
     alg, dtmax = rcsj_solver(p.βc; βc_stiff)
     prob = ODE.ODEProblem(rcsj, SVector(mod2pi(φ0), v0), (0.0, t_end), p)
-    sol = ODE.solve(prob, alg; saveat = [t_skip, t_end], save_start = false, dtmax, reltol, abstol, maxiters = 10^8)
+    sol = ODE.solve(prob, alg; saveat = [t_skip, t_end], save_start = false, dtmax,
+        reltol, abstol, maxiters = 10^8)
     v_dc = (sol.u[end][1] - sol.u[1][1]) / (t_end - t_skip)
     return v_dc, (sol.u[end][1], sol.u[end][2])
 end
