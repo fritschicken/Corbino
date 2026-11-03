@@ -32,9 +32,9 @@ shapiro_plot = plot_shapiro_grid(shapiro_results, µN_values, Δn_values; iac_cu
     savepath = joinpath(@__DIR__, "figures", "shapiro_grid_$(run_id).png"))
 
 # Reloading earlier runs (no recomputation):
-#   list_shapiro_runs()                                   # table of all saved runs (data/shapiro_runs/index.csv)
-#   run = load_shapiro_run("20261021-153012")             # results, µs, Δns, meta (all settings of that run)
-#   plot_shapiro_grid(run.results, run.µs, run.Δns; iac_cut = 1.0)   # units = :physical for setup 3 runs
-#   both = combine_shapiro_runs(load_shapiro_runs("id1", "id2")...)   # same µN → Δn columns side by side
+list_shapiro_runs()                                   # table of all saved runs (data/shapiro_runs/index.csv)
+run = load_shapiro_run("20261103-170959_parity_setup1")             # results, µs, Δns, meta (all settings of that run)
+plot_shapiro_grid(run.results, run.µs, run.Δns; iac_cut = 1.0)   # units = :physical for setup 3 runs
+#  both = combine_shapiro_runs(load_shapiro_runs("id1", "id2")...)   # same µN → Δn columns side by side
 #   plot_shapiro_grid(both.results, both.µs, both.Δns)
 print("done")

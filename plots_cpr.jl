@@ -1,23 +1,20 @@
 # Free energy, CPR and Fourier-harmonic figures. Loaded by project.jl; needs Makie and the functions of project.jl.
 
+# Ground state F₀ (even) and F₀ + εt (odd: one quasiparticle in the level that is the lowest positive one at φsel,
+# followed through crossings by spectrum_F0_tracked), not the naive F₀ + min|ε| at each ϕ
 function detailed_fourier_analysis(hN;
-        npoints = 128, max_harmonics = 12, solver,
+        npoints = 128, max_harmonics = 12, φsel = π/2,
         savepath = joinpath(@__DIR__, "figures/fourier_"), params...)
 
-    phases = collect(range(0, 2π, length = npoints + 1)[1:end-1])
-    N = length(phases)
+    N = npoints
+    phases = 2π .* (0:N-1) ./ N
     parameter_values = (; params...)
 
     println("Calculating free energy across $(N) phase points...")
     println("System parameters:")
     show(stdout, MIME"text/plain"(), parameter_values)
-    println("\nFourier settings: npoints = $npoints, max_harmonics = $max_harmonics")
-    F_vals = zeros(Float64, N)
-    E_vals = zeros(Float64, N)
-    for (i, ϕ_val) in enumerate(phases)
-        h_at_ϕ = hN(; params..., ϕ = ϕ_val)
-        F_vals[i], E_vals[i] = free_energy_gap(h_at_ϕ, solver)
-    end
+    println("\nFourier settings: npoints = $npoints, max_harmonics = $max_harmonics, φsel = $φsel")
+    F_vals, E_vals, Emin = spectrum_F0_tracked(hN, N, parameter_values; φsel)
 
     I_numeric, I_recon, A0, A_k, B_k, I_sin, I_cos, I_amp = fourier(F_vals, phases, max_harmonics, N)
     I_numeric2, I_recon2, A02, A_k2, B_k2, I_sin2, I_cos2, I_amp2 = fourier(F_vals .+ E_vals, phases, max_harmonics, N)
@@ -75,7 +72,7 @@ function detailed_fourier_analysis(hN;
 
     display(fig)
 
-    return (; fig, phases, F_vals, E_vals, I_numeric, I_numeric2, I_recon, A0, A_k, B_k,
+    return (; fig, phases, F_vals, E_vals, Emin, I_numeric, I_numeric2, I_recon, A0, A_k, B_k,
         I_sin, I_cos, I_amp, I_amp2, params = parameter_values,
     )
 end
