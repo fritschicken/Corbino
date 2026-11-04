@@ -1,9 +1,7 @@
 # Physics and computation: free energy, Fourier/CPR harmonics, Shapiro cases.
 # Packages and code.jl are loaded by setup.jl; this file loads the dynamics, plotting and run-storage files.
 includet("./rcsj.jl")            # RSJ/RCSJ dynamics
-includet("./plots_cpr.jl")       # F(ϕ), CPR and harmonic figures
-includet("./plots_spectrum.jl")  # BdG spectrum against flux
-includet("./plots_shapiro.jl")   # Shapiro grid figure
+includet("./plots.jl")           # spectrum, F(ϕ)/CPR/harmonic and Shapiro grid figures
 includet("./shapiro_runs.jl")    # saving / loading Shapiro runs
 
 function free_energy(h_inst, solver)

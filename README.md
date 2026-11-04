@@ -13,11 +13,9 @@ The work builds on the model and code of [arXiv:2506.15502](https://arxiv.org/ab
 | `setup.jl` | Shared by the scripts: packages, `base_params`, `solver`, and the Shapiro setups (`shapiro_setups`, `device`) |
 | `project.jl` | Physics and computation: free energy, Fourier/CPR harmonics, even/odd parity CPRs, Shapiro cases; loads all files below |
 | `rcsj.jl` | RSJ/RCSJ dynamics at T = 0 (needs only the normalized CPR, not Quantica); physical units |
-| `plots_cpr.jl` | Free energy, CPR and harmonic figures: `detailed_fourier_analysis`, `sweep_vg_mu_harmonic_amplitudes`, `plot_free_energy_current` |
-| `plots_spectrum.jl` | `plot_flux_spectrum`: BdG spectrum against flux with fluxoid winding bars |
-| `plots_shapiro.jl` | `plot_shapiro_grid` (and `latex_num`) |
+| `plots.jl` | Plotting functions: `plot_flux_spectrum` (BdG spectrum against flux with fluxoid winding bars); `detailed_fourier_analysis`, `sweep_vg_mu_harmonic_amplitudes`, `plot_free_energy_current` (free energy, CPR and harmonics); `plot_shapiro_grid` (and `latex_num`) |
 | `shapiro_runs.jl` | Saving, loading and combining Shapiro runs |
-| `fig_fourier.jl`, `fig_harmonics_map.jl`, `fig_spectrum.jl`, `fig_free_energy_current.jl`, `fig_shapiro.jl`, `fig_shapiro_parity.jl` | One script per figure, each with its own parameters |
+| `figures.jl` | One function per figure, each with its own parameters: `fig_fourier`, `fig_harmonics_map`, `fig_spectrum`, `fig_free_energy_current`, `fig_shapiro`, `fig_shapiro_parity`, and `replot_shapiro` for saved runs |
 | `test_rcsj.jl` | Validation of the Shapiro solver against known results: `julia --project -t auto test_rcsj.jl` |
 | `test.jl`, `test_periodicity.jl`, `time_evo.jl` | Exploratory: soliton branches, 2π/4π periodicity scan, time evolution under a phase sweep (Landau–Zener) |
 | `figures/` | Generated figures |
@@ -57,19 +55,21 @@ julia --project
 
 ## Usage
 
-Start Julia from this folder with `julia --project` and run the script of the figure you want:
+Start Julia from this folder with `julia --project`, load `figures.jl` and call the function of the figure you want:
 
 ```julia
 using Revise
-include("fig_fourier.jl")          # or fig_spectrum.jl, fig_free_energy_current.jl, fig_harmonics_map.jl, fig_shapiro.jl, fig_shapiro_parity.jl
+include("figures.jl")
+fig_fourier()          # or fig_spectrum(), fig_free_energy_current(), fig_harmonics_map(), fig_shapiro(), fig_shapiro_parity()
+replot_shapiro("20261103-170959_parity_setup1")    # a saved Shapiro run, no recomputation
 ```
 
-`base_params`, `solver` and the Shapiro setups are shared in `setup.jl`; each script sets its own `params` on top. There are two Shapiro scripts:
+`base_params`, `solver` and the Shapiro setups are shared in `setup.jl`; each figure function sets its own `params` on top. There are two Shapiro figures:
 
-- `fig_shapiro.jl`: ground-state CPR, a grid of µN rows × Δn columns
-- `fig_shapiro_parity.jl`: even and odd fermion parity of one case (rows), the column labelled by the gate profile `V_g ∝ cos(mult θ)`
+- `fig_shapiro()`: ground-state CPR, a grid of µN rows × Δn columns
+- `fig_shapiro_parity()`: even and odd fermion parity of one case (rows), the column labelled by the gate profile `V_g ∝ cos(mult θ)`
 
-Each script sets its own `cpr_settings` and picks one of the setups (defined in `shapiro_setups` in `setup.jl`) with `setup`:
+Each sets its own `cpr_settings` and picks one of the setups (defined in `shapiro_setups` in `setup.jl`) with the `setup` keyword, e.g. `fig_shapiro(setup = 2)`:
 
 1. RSJ baseline: `βc = 0`, `Ω = 0.5`
 2. Capacitive control: `βc = 2.78`, `Ω = 1.8` (Kautz 1996, Fig. 13a), to tell capacitive half-integer steps from CPR ones

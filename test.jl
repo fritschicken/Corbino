@@ -90,38 +90,40 @@ function plot_ring(h, r, l, loops)
     display(fig)
 end
 
-mult = 2
+mult = 1
 
-params = merge(base_params, (;R = 700, N = 500, µ = 0.11, ϕ = 0, n = 1, Δ = 0.2, Vg = 2.1, mult=mult))
+params = merge(base_params, (;R = 700, N = 500, µ = 0.11, ϕ = 0, n = 2, Δ = 0.2, Vg = 2.1, mult=mult))
 
-l = 800
+l = 4000
 nev = 40
 solver = ES.ShiftInvert(ES.ArnoldiMethod(nev = nev), 0)
 (; hN, ϵ1, t) = build(; params...);
-
-phis = range(0, 2π, length = l+1)[1:l]
+phi0 = 0.1
+phis = range(0, 4π, length = l+1)[1:l]
 b = bands(hN, phis; mapping = φ -> ftuple(;params..., ϕ = φ), solver=solver)
 fig = qplot(b;hide=:nodes, color=:black)
 
-s = b[(phis[div(l,4)], :)]
-ε = [isempty(Quantica.vertices(x)) ? Inf : real(Quantica.energy(Quantica.vertices(x)[1])) for x in s]
-jred = argmin(k -> ε[k] > 0 ? ε[k] : Inf, eachindex(ε))
+# index of the subband holding the lowest positive energy at φ (a subband may cross φ several times)
+function lowest_positive_subband(b, φ)
+    εmin(x) = minimum((e for e in (real(Quantica.energy(v)) for v in Quantica.vertices(x)) if e > 0); init = Inf)
+    s = b[(φ, :)]
+    return argmin(k -> εmin(s[k]), eachindex(s))
+end
+jred = lowest_positive_subband(b, phi0)
 qplot!(b[[jred]];color=:red, hide=:nodes)
-s = b[(phis[div(l*3,4)], :)]
-ε = [isempty(Quantica.vertices(x)) ? Inf : real(Quantica.energy(Quantica.vertices(x)[1])) for x in s]
-jblue = argmin(k -> ε[k] > 0 ? ε[k] : Inf, eachindex(ε))
+jblue = lowest_positive_subband(b, 2π + phi0)
 qplot!(b[[jblue]];color=:blue, hide=:nodes)
 display(fig)
-phiall, es, ψs, εk = soliton_branches(hN, phis, solver; params, loops = 5)
-E = reshape(es, l, :)
-nloops = size(E, 2)
-period = findfirst(m -> isapprox(E[:, 1], E[:, m+1]), 1:nloops-1)
-println("μ: $(params.μ), Vg: $(params.Vg)")
-if isnothing(period)
-    period = nloops
-    println("tracked state not periodic within $(2period)π, plotting all loops")
-else
-    println("tracked state is $(2period)π periodic")
-end
-plotting(b, [jred, jblue], [:red, :blue], mult)
+#phiall, es, ψs, εk = soliton_branches(hN, phis, solver; params, loops = 5)
+#E = reshape(es, l, :)
+#nloops = size(E, 2)
+#period = findfirst(m -> isapprox(E[:, 1], E[:, m+1]), 1:nloops-1)
+#println("μ: $(params.μ), Vg: $(params.Vg)")
+#if isnothing(period)
+#    period = nloops
+#    println("tracked state not periodic within $(2period)π, plotting all loops")
+#else
+#    println("tracked state is $(2period)π periodic")
+#end
+#plotting(b, [jred, jblue], [:red, :blue], mult)
 #plot_ring(hN(; params...), (; es, ψs), l, period+1)
