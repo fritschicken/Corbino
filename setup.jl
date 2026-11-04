@@ -1,7 +1,7 @@
 # Shared by the figure scripts: packages, project functions, base parameters, the solver and the Shapiro setups.
 # Each script sets its own params on top of base_params and builds hN.
 using Quantica, StaticArrays, LinearMaps
-using CairoMakie   # for interactive windows: `using GLMakie` (or `GLMakie.activate!()`) in the REPL
+using CairoMakie
 using ArnoldiMethod
 using Printf
 using JLD2

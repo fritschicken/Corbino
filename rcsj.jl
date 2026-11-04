@@ -1,7 +1,8 @@
 using StaticArrays
 using Printf
 using ProgressMeter
-import OrdinaryDiffEq as ODE
+import OrdinaryDiffEqTsit5 as ODE                 # Tsit5, AutoTsit5, ODEProblem, solve
+import OrdinaryDiffEqRosenbrock: Rosenbrock23
 
 # ---------------------------------------------------------
 # Shapiro steps: RSJ / RCSJ junction driven by I_dc + I_ac sin(Ωτ), T = 0 (no noise term)
@@ -72,7 +73,7 @@ rsj(φ, p, t) = p.idc + p.iac * sin(p.Ω * t) - cpr_value(φ, p.s, p.c)
 # on both paths, independently of the drive period (which is long for small Ω).
 function rcsj_solver(βc; βc_stiff = 1.0)
     βc ≥ βc_stiff && return ODE.Tsit5(), 0.1 * min(βc, sqrt(βc), 1)
-    return ODE.AutoTsit5(ODE.Rosenbrock23()), 0.1 * min(sqrt(βc), 1)
+    return ODE.AutoTsit5(Rosenbrock23()), 0.1 * min(sqrt(βc), 1)
 end
 
 # Integrate an integer number of drive periods from τ = 0 (drive phase 0) starting at u_in = (φ, v);
