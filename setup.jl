@@ -1,5 +1,5 @@
 # Shared by the figure scripts: packages, project functions, base parameters, the solver and the Shapiro setups.
-# Each script sets its own params on top of base_params and builds hN.
+# Each script sets its own params on top of base_params and builds hN2.
 using Quantica, StaticArrays, LinearMaps
 using CairoMakie
 using ArnoldiMethod
@@ -14,7 +14,7 @@ includet("./project.jl")
 
 base_params = (;
     ħ2ome = 76.2,
-    N = 250,
+    N = 500,
     m = 0.065,
     µ = 0.1,
     R = 500,
@@ -37,3 +37,5 @@ shapiro_setups = Dict(
     3 => (; scaling = :physical, βc = 0.0, iac_cut = 1.0,                         # βc from I_c; iac_cut in µA
         drive = (; Idcs_uA = range(-3, 3, 301), Iacs_uA = range(0, 5, 201)),      # µA, odd length → I_dc = 0 on the grid
         bias = (; nper_skip_min = 20, nper_avg = 60)))
+
+figpath(name) = joinpath(@__DIR__, "figures", name)

@@ -1,5 +1,15 @@
 include("setup.jl")
-function soliton_branches(hφ, φs, solver; params = (;), loops = 4, seed = nothing, edge = 4)
+include("rcsj.jl")
+
+# Tracks one level along φ (repeating φs `loops` times).
+# diabatic = false: adiabatic tracking (max overlap with the previous eigenstate), stays on its branch at avoided crossings.
+# diabatic = true:  passes through avoided crossings. Each step the previous state is projected onto all levels within
+#                   gapmax of its predicted (linearly extrapolated) energy, which keeps its character through crossings
+#                   with gaps ≲ gapmax; its energy is Σ|cᵢ|²εᵢ / Σ|cᵢ|². Only applied while |ε| ≤ εmax: keep εmax
+#                   below the quasi-continuum, where every level has narrow anticrossings. `mixed[step]` marks steps
+#                   where more than one level carries a fraction ≥ tol of the tracked state.
+function soliton_branches(hφ, φs, solver; params = (;), loops = 4, seed = nothing, edge = 4,
+                          diabatic = false, tol = 0.05, gapmax = Inf, εmax = Inf)
     sps = [spectrum(hφ(; params..., ϕ = φ); solver) for φ in φs]
     εk = [real(energies(sp)) for sp in sps]
     ψk = [states(sp) for sp in sps]
@@ -8,122 +18,104 @@ function soliton_branches(hφ, φs, solver; params = (;), loops = 4, seed = noth
     ε  = εk[1]
     pos = findall(>(0), ε)
     i  = isnothing(seed) ? pos[argmin(ε[pos])] : pos[argmin(ε[pos])+seed]
-    v  = ψk[1][:, i]
+    v  = ψk[1][:, i]   # reference state
 
     n = loops * l
     εs = zeros(n)
     ψs = zeros(ComplexF64, length(v), n)
+    mixed = falses(n)
     for step in 1:n
         k = mod1(step, l)
         ε, ψ = εk[k], ψk[k]
-        ov = abs2.(ψ' * v)
+        c  = ψ' * v
+        ov = abs2.(c)
         j  = argmax(ov)
-        ov[j] < 0.5 && @warn "weak overlap $(ov[j]) at φ = $(φs[k]): refine the grid here"
         (ε[j] ≥ partialsort(ε, length(ε) - edge) || ε[j] ≤ partialsort(ε, edge + 1)) &&
             @warn "tracked level ε = $(ε[j]) at the edge of the solver window at φ = $(φs[k]): increase nev"
+        if diabatic && step > 2
+            εp = 2εs[step-1] - εs[step-2]                       # predicted diabatic energy
+            S = union(findall(e -> abs(e - εp) ≤ gapmax, ε), j)  # levels it can mix with
+            if length(S) > 1 && abs(εp) ≤ εmax
+                # transport the state by projecting it onto those levels (keeps its character through crossings)
+                v = normalize(ψ[:, S] * c[S])
+                εs[step] = sum(ov[S] .* ε[S]) / sum(ov[S])
+                ψs[:, step] = v
+                mixed[step] = count(≥(tol * sum(ov[S])), ov[S]) > 1
+                continue
+            end
+        end
+        ov[j] < 0.5 && @warn "weak overlap $(ov[j]) at φ = $(φs[k]): refine the grid here"
         v = ψ[:, j]
-        #tracked levels
         ψs[:, step] = v
         εs[step]  = ε[j]
-
     end
-    φall = vcat((φs .+ 2π * m for m in 0:loops-1)...)
-    return φall, εs, ψs, εk
+    P = l * (φs[2] - φs[1])                       # span of the (uniform, endpoint-excluded) φ grid
+    φall = vcat((φs .+ P * m for m in 0:loops-1)...)
+    return φall, εs, ψs, εk, mixed
 end
 
-# |ψ|² per site along subband j of b, read from its band vertices (summed over the degenerate states), sorted by φ
-function subband_density(b, j)
-    vs = Quantica.vertices(Quantica.subbands(b)[j])
-    φ = [Quantica.base_coordinates(v)[1] for v in vs]
-    ρ = reduce(hcat, [vec(sum(site_density(Quantica.states(v)), dims = 2)) / Quantica.degeneracy(v) for v in vs])
-    p = sortperm(φ)
-    return φ[p], ρ[:, p]
-end
-
-function plotting(b, js, colors, mult)
-    πticks(n) = (π .* (0:n), [k == 0 ? "0" : k == 1 ? "π" : "$(k)π" for k in 0:n])
-    fig = Figure(size = (1200, 520))
-    Label(fig[0, 1:2+length(js)], rich("V", subscript("g"), " ~ cos(",(mult==1 ? "" : string(mult)),"φ)"); fontsize = 18, font = :bold)
-
-    ax = Axis(fig[1, 1]; xlabel = L"\phi", ylabel = L"\varepsilon", xticks = πticks(2))
-    plotbands!(ax, b; color = :gray75, hide = :nodes)
-    for (j, c) in zip(js, colors)
-        plotbands!(ax, b[[j]]; color = c, size = 3, hide = :nodes)
-    end
-    lim = 0.5
-    ylims!(ax, -lim, lim)
-    xlims!(ax, 0, 2π)
-
-    # states of the colored subbands along φ, overlaid (colormaps fade to transparent at zero density)
-    ax2 = Axis(fig[1, 2]; xlabel = L"\phi", ylabel = "site", title = L"|\psi|^2", xticks = πticks(2))
-    for (i, (j, c)) in enumerate(zip(js, colors))
-        φ, ρ = subband_density(b, j)
-        hm = heatmap!(ax2, φ, 1:size(ρ, 1), permutedims(ρ); colormap = [(c, 0.0), (c, 1.0)])
-        Colorbar(fig[1, 2+i], hm)
-    end
-    xlims!(ax2, 0, 2π)
-    colsize!(fig.layout, 1, Relative(0.4))
-    display(fig)
-end
-
-site_density(ψs) = dropdims(sum(reshape(abs2.(ψs), 4, :, size(ψs, 2)), dims = 1), dims = 1)
-
-function plot_ring(h, r, l, loops)
-    (; es, ψs) = r
-    steps = [(k - 1) * l + 1 + c * (l ÷ 8) for k in 1:loops, c in 0:3]
-    ρmax = maximum(site_density(ψs[:, vec(steps)]))
-    θ = range(0, 2π, length = 400)
-    fig = Figure(size = (250 * 4, 270 * loops + 60))
-    for k in 1:loops, c in 0:3
-        s = steps[k, c + 1]
-        w = abs2.(reshape(ψs[:, s], 4, :))  # orbitals (e↑, e↓, h↑, h↓) × sites
-        ρe, ρh = vec(sum(w[1:2, :], dims = 1)), vec(sum(w[3:4, :], dims = 1))
-        ax = Axis(fig[k, c + 1]; aspect = DataAspect(), title = "φ = $(4(k - 1) + c)π/2,  ε = $(round(es[s], digits = 4))")
-        hidedecorations!(ax); hidespines!(ax)
-        lines!(ax, params.R .* cos.(θ), params.R .* sin.(θ); color = :gray85)
-        plotlattice!(ax, h; hide = :hops, siteoutline = 0,
-            siteradius = ranged(ρe .+ ρh, (0, ρmax)), minmaxsiteradius = (0, 6),
-            sitecolor = ranged(ρe .- ρh, (-ρmax, ρmax)), sitecolormap = :balance)
-    end
-    Colorbar(fig[loops + 1, :]; limits = (-ρmax, ρmax), colormap = :balance, vertical = false, flipaxis = false,
-        label = "electron − hole weight per site", width = Relative(0.4))
-    display(fig)
-end
-
-mult = 1
-
-params = merge(base_params, (;R = 700, N = 500, µ = 0.11, ϕ = 0, n = 2, Δ = 0.2, Vg = 2.1, mult=mult))
-
-l = 4000
-nev = 40
-solver = ES.ShiftInvert(ES.ArnoldiMethod(nev = nev), 0)
-(; hN, ϵ1, t) = build(; params...);
-phi0 = 0.1
-phis = range(0, 4π, length = l+1)[1:l]
-b = bands(hN, phis; mapping = φ -> ftuple(;params..., ϕ = φ), solver=solver)
-fig = qplot(b;hide=:nodes, color=:black)
-
-# index of the subband holding the lowest positive energy at φ (a subband may cross φ several times)
 function lowest_positive_subband(b, φ)
-    εmin(x) = minimum((e for e in (real(Quantica.energy(v)) for v in Quantica.vertices(x)) if e > 0); init = Inf)
+    εmin(x) = minimum(filter(>(0), real.(Quantica.energy.(Quantica.vertices(x)))); init = Inf)
     s = b[(φ, :)]
     return argmin(k -> εmin(s[k]), eachindex(s))
 end
+
+params = merge(base_params, (; R = 700, N = 500, µ = 0.3,n=1 ,Δ = 0.2, Vg = 2.0, mult = 2, λg = Inf))
+
+
+l = 400
+nev = 50
+solver = ES.ShiftInvert(ES.ArnoldiMethod(nev = nev), 0)
+(; hN2, ϵ1, t) = build(; params...);
+phi0 = 0.3
+phis = range(0, 4π, length = l+1)[1:l] .+ 2π/l   # half-step shift, l multiple of 4: φ_j = (2j+1)·2π/l, never a multiple of π
+b = bands(hN2, phis; mapping = φ -> ftuple(;params..., ϕ = φ), solver=solver)
 jred = lowest_positive_subband(b, phi0)
-qplot!(b[[jred]];color=:red, hide=:nodes)
-jblue = lowest_positive_subband(b, 2π + phi0)
-qplot!(b[[jblue]];color=:blue, hide=:nodes)
+jblue = lowest_positive_subband(b, 2π/params.mult + phi0)
+
+
+plot_bands_density(b, [jred, jblue], [:red,:blue], params.mult;elim=0.5)   # plots.jl
+#detailed_fourier_analysis(hN2; npoints = 64, params...)
+
+#=
+case = (; Δn = 1)                   # Vg: gate voltage [meV]
+cpr_settings = (; N0 = 8, N_max = 128, tol_alias = 1e-3, tol_tail = 1e-3)
+plot_free_energy_current(hN2, case; n0 = 0, cpr_settings,
+    savepath = figpath("free_energy_current.png"), params...)
+=#
+#=
+adiabatic path
+_, ea, _, εk = soliton_branches(hN2, phis, solver; params, loops = 1)
+phiall, ed, ψs, _, mixed = soliton_branches(hN2, phis, solver; params, loops = 1,
+                                            diabatic = true, gapmax = 0.08, εmax = 0.1)
+fig = Figure(); ax = Axis(fig[1, 1]; xlabel = "φ", ylabel = "ε")
+for k in eachindex(phis)
+    scatter!(ax, fill(phis[k], length(εk[k])), εk[k]; color = :gray60, markersize = 3)
+end
+lines!(ax, phiall, ea; color = (:red, 0.4), linewidth = 5)   # adiabatic
+lines!(ax, phiall, ed; color = :blue)                         # diabatic
+scatter!(ax, phiall[mixed], ed[mixed]; color = :blue, markersize = 4)
 display(fig)
-#phiall, es, ψs, εk = soliton_branches(hN, phis, solver; params, loops = 5)
-#E = reshape(es, l, :)
-#nloops = size(E, 2)
-#period = findfirst(m -> isapprox(E[:, 1], E[:, m+1]), 1:nloops-1)
-#println("μ: $(params.μ), Vg: $(params.Vg)")
-#if isnothing(period)
-#    period = nloops
-#    println("tracked state not periodic within $(2period)π, plotting all loops")
-#else
-#    println("tracked state is $(2period)π periodic")
-#end
-#plotting(b, [jred, jblue], [:red, :blue], mult)
-#plot_ring(hN(; params...), (; es, ψs), l, period+1)
+=#
+
+shapiro_setup = 1
+(; scaling, βc, iac_cut, drive, bias) = shapiro_setups[shapiro_setup]
+case = (; Δn = params.n)
+drive = (; Ω = 0.2, idcs = range(-2, 2, 401), iacs = range(0, 3, 301))
+bias = (; nper_skip_min = 5, nper_avg = 30)
+cpr_settings = (; N0 = 16, N_max = 256, tol_cpr = 1e-3, nev = 40)
+shapiro_cpr  = (; cpr_settings..., Ic_tol = 1e-5)
+n0 = 0
+p_shapiro = (; params..., Base.structdiff(case, NamedTuple{(:Δn,)})..., n0, n = n0 + case.Δn)
+shapiro_label = @sprintf("Δn = %g, Vg = %g meV", case.Δn, p_shapiro.Vg)
+println("RCSJ Shapiro maps, even and odd parity, for ", shapiro_label, " ...")
+shapiro_results = [(; case, r...) for r in
+    shapiro_parity_cases(hN2, p_shapiro; cpr_settings = shapiro_cpr, φsel = π/2, drive, bias, βc, scaling, device,
+        label = shapiro_label)]
+rows = ["Even parity", "Odd parity"]
+cols = [params.mult == 1 ? "\$V_g \\propto \\cos\\theta\$" : "\$V_g \\propto \\cos($(params.mult)\\theta)\$"]
+run_id = save_shapiro_run(shapiro_results, rows, cols; label = "test_setup$(shapiro_setup)_lowOmega",
+    meta = (; params, case, setup = shapiro_setup, scaling, drive, bias, βc, cpr_settings = shapiro_cpr, device))
+plot_shapiro_grid(shapiro_results, rows, cols; iac_cut,
+    units = scaling == :physical ? :physical : :normalized,
+    savepath = figpath("shapiro_parity_$(run_id).png"))

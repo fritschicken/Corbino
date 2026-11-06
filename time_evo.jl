@@ -102,30 +102,30 @@ function plot_evolution(r, ω)
     display(fig)
 end
 
-params = merge(base_params, (;R = 500, N = 500, µ = 0.11, ϕ = 0, n = 1, Δ = 0.2, Vg = 2.1, mult=1))
+params = merge(base_params, (;R = 600, N = 500, µ = 0.11, ϕ = 0, n = 2, Δ = 0.2, Vg = 2.1, mult=1))
 
-nev = 50
+nev = 40
 solver = ES.ShiftInvert(ES.ArnoldiMethod(nev = nev), 0)
-(; hN, ϵ1, t) = build(; params...);
+(; hN2, ϵ1, t) = build(; params...);
 
 # start in the lowest positive level at φ = 0, as in soliton_branches
-sp0 = spectrum(hN(; params..., ϕ = 0.0); solver)
+sp0 = spectrum(hN2(; params..., ϕ = 0.0); solver)
 ε0 = real(energies(sp0))
 pos = findall(>(0), ε0)
 ψ0 = states(sp0)[:, pos[argmin(ε0[pos])]]
 
 # (anti)crossings of the low positive levels: the 4π swap needs the ones the tracked level jumps
 # to be exact (δE at machine precision) or to have ω_c ≪ ω, and the ones it follows ω_c ≫ ω
-gaps = crossing_gaps(hN, solver; params)
+gaps = crossing_gaps(hN2, solver; params)
 for c in gaps
     @printf("levels %d-%d  φ = %.4fπ  ε = %.4f  δE = %.2e  ω_c = %.2e%s\n",
         c.k, c.k + 1, c.φ / π, c.ε, c.δE, c.ωc, c.δE < 1e-9 ? "  exact" : "")
 end
 
 # scan through the Landau–Zener crossover ω_c ≈ π δE² / (2|ΔE′|) of the anticrossings
-ωs = [2.5e-3, 3e-5]
+ωs = [2e-3, 1e-4]
 for ω in ωs
-    r = evolve(hN, ψ0, ω, solver; params, nper = 4)
+    r = evolve(hN2, ψ0, ω, solver; params, nper = 2)
     println("ω = $ω: $(r.nsteps) steps of dt = $(round(r.dt, sigdigits = 3)), ",
         "P(2π) = $(round(fidelity_at(r, 2π), digits = 3)), P(4π) = $(round(fidelity_at(r, 4π), digits = 3)), ",
         "window weight = $(round(sum(r.occ[end]), digits = 3))")

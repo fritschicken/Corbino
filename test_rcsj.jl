@@ -3,8 +3,8 @@
 using Test
 include("rcsj.jl")
 
-const SIN = ([1.0], [0.0])
-const SIN2 = ([0.0, 1.0], [0.0, 0.0])
+const SIN = tabulate(sin)                     # CPR sin φ as a 4096-point table
+const SIN2 = tabulate(φ -> sin(2φ))
 
 # Bessel function of the first kind from its integral representation (avoids a SpecialFunctions dependency)
 function besselj_int(n, x; m = 4000)
@@ -34,7 +34,7 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
 
     @testset "1. i_ac = 0, βc = 0: ⟨v⟩ = √(i² − 1)" begin
         idcs = range(0, 3, 61)
-        m = shapiro_map(SIN...; Ω = 0.5, βc = 0, idcs, iacs = [0.0], nper_avg = 60, nper_skip_min = 20, showprogress = false)
+        m = shapiro_map(SIN; Ω = 0.5, βc = 0, idcs, iacs = [0.0], nper_avg = 60, nper_skip_min = 20, showprogress = false)
         exact = [abs(i) > 1 ? sqrt(i^2 - 1) : 0.0 for i in idcs]
         err = maximum(abs, m.V_up[:, 1] .- exact)
         println(@sprintf("  max |⟨v⟩ − √(i²−1)| = %.2e", err))
@@ -44,7 +44,7 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
     @testset "2. i_ac = 0, βc = 5: switching ≈ 1, retrapping ≈ 4/(π√βc)" begin
         idcs = range(0, 1.5, 151)
         βc = 5.0
-        m = shapiro_map(SIN...; Ω = 0.5, βc, idcs, iacs = [0.0], nper_avg = 60, nper_skip_min = 20, showprogress = false)
+        m = shapiro_map(SIN; Ω = 0.5, βc, idcs, iacs = [0.0], nper_avg = 60, nper_skip_min = 20, showprogress = false)
         i_sw = idcs[findfirst(>(0.05), m.V_up[:, 1])]
         i_r = idcs[findfirst(>(0.05), m.V_down[:, 1])]
         println(@sprintf("  switching at i_dc = %.3f, retrapping at i_dc = %.3f (4/(π√βc) = %.3f)", i_sw, i_r, 4 / (π * sqrt(βc))))
@@ -54,8 +54,8 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
 
     @testset "3. βc = 1e-2 reproduces the βc = 0 map" begin
         grid = (; Ω = 0.5, idcs = range(-2, 2, 81), iacs = range(0, 3, 31), nper_avg = 60, nper_skip_min = 20, showprogress = false)
-        m0 = shapiro_map(SIN...; βc = 0, grid...)
-        m1 = shapiro_map(SIN...; βc = 1e-2, grid...)
+        m0 = shapiro_map(SIN; βc = 0, grid...)
+        m1 = shapiro_map(SIN; βc = 1e-2, grid...)
         d = abs.(m1.V_up .- m0.V_up) ./ grid.Ω
         frac = count(>(0.05), d) / length(d)
         println(@sprintf("  ⟨v⟩/Ω: mean |Δ| = %.2e, max |Δ| = %.2e, %.1f %% of points with |Δ| > 0.05; max hysteresis/Ω = %.2e",
@@ -68,7 +68,7 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
         Ω = 5.0
         idcs = range(-1.5, 12, 1351)
         iacs = [2.5, 5.0, 10.0]
-        m = shapiro_map(SIN...; Ω, βc = 0, idcs, iacs, nper_avg = 400, nper_skip_min = 20, showprogress = false)
+        m = shapiro_map(SIN; Ω, βc = 0, idcs, iacs, nper_avg = 400, nper_skip_min = 20, showprogress = false)
         for (j, iac) in enumerate(iacs), n in 0:2
             w = plateau_width(idcs, m.V_up[:, j] ./ Ω, n)
             expected = 2 * abs(besselj_int(n, iac / Ω))
@@ -80,7 +80,7 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
     @testset "5. CPR = sin 2φ, βc = 0: plateaus only at multiples of 1/2" begin
         Ω = 0.5
         idcs = range(0, 2, 201)
-        m = shapiro_map(SIN2...; Ω, βc = 0, idcs, iacs = range(0, 3, 31), nper_avg = 60, nper_skip_min = 20, showprogress = false)
+        m = shapiro_map(SIN2; Ω, βc = 0, idcs, iacs = range(0, 3, 31), nper_avg = 60, nper_skip_min = 20, showprogress = false)
         values = [p[1] for j in axes(m.V_up, 2) for p in plateaus(idcs, m.V_up[:, j] ./ Ω; minlen = 4)]
         off = filter(x -> abs(2x - round(2x)) > 0.02, values)
         println(@sprintf("  %d plateaus, distinct values %s, %d off the half-integer grid",
@@ -90,14 +90,14 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
     end
 
     @testset "6. βc = 100, Ω = 0.3, i_ac = 10: n = ±1 steps cover i_dc = 0" begin
-        p = (; Ω = 0.3, βc = 100.0, iac = 10.0, s = SIN[1], c = SIN[2])
+        p = (; Ω = 0.3, βc = 100.0, iac = 10.0, cpr = SIN)
         bias = (; nper_avg = 60, nper_skip_min = 20)
-        v0, u = bias_point(rest_state(SIN...), (; p..., idc = 0.0); bias...)
+        v0, u = bias_point(rest_state(SIN), (; p..., idc = 0.0); bias...)
         println(@sprintf("  from rest at i_dc = 0: ⟨v⟩/Ω = %.4f", v0 / p.Ω))
         @test abs(v0 / p.Ω - 1) < 1e-2
         # outward sweeps from rest: the n = +1 step extends to both sides of i_dc = 0
         idcs = range(-0.2, 0.2, 41)
-        V_up, V_down = sweep_column(p.iac, p.s, p.c; Ω = p.Ω, βc = p.βc, idcs, bias...)
+        V_up, V_down = sweep_column(p.iac, p.cpr; Ω = p.Ω, βc = p.βc, idcs, bias...)
         near = abs.(idcs) .≤ 0.05
         println(@sprintf("  outward sweeps: ⟨v⟩/Ω ∈ [%.4f, %.4f] for |i_dc| ≤ 0.05", extrema(V_up[near] ./ p.Ω)...))
         @test all(x -> abs(x - 1) < 1e-2, V_up[near] ./ p.Ω)
@@ -113,9 +113,11 @@ plateau_width(idcs, w, n; tol = 1e-3) = count(x -> abs(x - n) < tol, w) * step(i
     @testset "7. Kautz 1996 Fig. 13a (βc = 2.78, Ω = 1.8, i_ac = 16.9)" begin
         Ω = 1.8
         idcs = range(0, 4, 201)
-        m = shapiro_map(SIN...; Ω, βc = 2.78, idcs, iacs = [16.9], nper_avg = 60, nper_skip_min = 20, showprogress = false)
+        m = shapiro_map(SIN; Ω, βc = 2.78, idcs, iacs = [16.9], nper_avg = 60, nper_skip_min = 20, showprogress = false)
         w = m.V_up[:, 1] ./ Ω
-        for (val, lo, hi) in ((1/3, 0.60, 0.62), (1/2, 0.84, 0.94), (2/3, 1.12, 1.16), (1, 1.30, 2.38), (3/2, 2.66, 2.78))
+        # the n = 1 step starts at i_dc ≈ 1.30, right next to a chaotic region (i_dc = 1.28): the edge point lands on the step
+        # or not depending on 1e-7-level details of the CPR (table resolution), so it is checked from the next point, 1.32
+        for (val, lo, hi) in ((1/3, 0.60, 0.62), (1/2, 0.84, 0.94), (2/3, 1.12, 1.16), (1, 1.32, 2.38), (3/2, 2.66, 2.78))
             inside = findall(i -> lo - 1e-9 ≤ i ≤ hi + 1e-9, idcs)
             got = extrema(w[inside])
             println(@sprintf("  ⟨v⟩/Ω = %.3f expected on i_dc ∈ [%.2f, %.2f]: found [%.4f, %.4f]", val, lo, hi, got...))

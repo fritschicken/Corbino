@@ -24,18 +24,17 @@ function fluxoid_bar!(ax, xs, windings)
     end
 end
 
-function plot_flux_spectrum(hN; nmax = 2.0, npoints = 150, area_ratio = 0.5, nev = 40,
+function plot_flux_spectrum(hN2; nmax = 2.0, npoints = 150, area_ratio = 0.5, nev = 40,
         solver = ES.ShiftInvert(ES.ArnoldiMethod(nev = 4 + nev), 0), savepath = nothing, params...)
     Δ = NamedTuple(params).Δ
     ns, jumps, _ = flux_grid(nmax, npoints, area_ratio)
-    b = bands(hN, ns; mapping = n -> ftuple(; params..., n, n0 = n * area_ratio), solver)
+    b = bands(hN2, ns; mapping = n -> ftuple(; params..., n, n0 = n * area_ratio), solver)
 
     fig = Figure(size = (600, 550))
     bar_specs = (("Inner ring", round.(Int, ns .* area_ratio)),
                  ("Outer ring", round.(Int, ns)))
     bar_axes = map(enumerate(bar_specs)) do (row, (label, windings))
-        axb = Axis(fig[row, 1], ylabel = label, ylabelrotation = 0,
-            title = row == 1 ? L"\Delta_0=\Delta_1" : "", titlealign = :right)
+        axb = Axis(fig[row, 1], ylabel = label, ylabelrotation = 0)
         fluxoid_bar!(axb, ns, windings)
         hidexdecorations!(axb)
         hideydecorations!(axb, label = false)
@@ -65,19 +64,19 @@ end
 # ---------------------------------------------------------------------
 # Ground state F₀ (even) and F₀ + εt (odd: one quasiparticle in the level that is the lowest positive one at φsel,
 # followed through crossings by spectrum_F0_tracked), not the naive F₀ + min|ε| at each ϕ
-function detailed_fourier_analysis(hN;
+function fourier_analysis(hN2;
         npoints = 128, max_harmonics = 12, φsel = π/2,
         savepath = joinpath(@__DIR__, "figures/fourier_"), params...)
 
     N = npoints
-    phases = 2π .* (0:N-1) ./ N
+    phases = tracked_phases(N)   # same grid as spectrum_F0_tracked
     parameter_values = (; params...)
 
     println("Calculating free energy across $(N) phase points...")
     println("System parameters:")
     show(stdout, MIME"text/plain"(), parameter_values)
     println("\nFourier settings: npoints = $npoints, max_harmonics = $max_harmonics, φsel = $φsel")
-    F_vals, E_vals, Emin = spectrum_F0_tracked(hN, N, parameter_values; φsel)
+    F_vals, E_vals, Emin = spectrum_F0_tracked(hN2, N, parameter_values; φsel)
 
     I_numeric, I_recon, A0, A_k, B_k, I_sin, I_cos, I_amp = fourier(F_vals, phases, max_harmonics, N)
     I_numeric2, I_recon2, A02, A_k2, B_k2, I_sin2, I_cos2, I_amp2 = fourier(F_vals .+ E_vals, phases, max_harmonics, N)
@@ -140,88 +139,150 @@ function detailed_fourier_analysis(hN;
     )
 end
 
-function sweep_vg_mu_harmonic_amplitudes(hN, case; Vg_values, µ_values, n0 = 0,
-        npoints = 64, max_harmonics = 8, solver, savepath = nothing, params...)
-    npoints > 2max_harmonics || throw(ArgumentError("npoints must be larger than 2max_harmonics"))
-    phases = 2π .* (0:(npoints - 1)) ./ npoints
-    harmonics = 1:max_harmonics
-    (; Δn) = case
-    overrides = Base.structdiff(case, NamedTuple{(:Δn,)})
-
-    amplitudes = Array{Float64}(undef, length(Vg_values), length(µ_values), max_harmonics)
-    for (iµ, µ_value) in enumerate(µ_values), (iVg, Vg_value) in enumerate(Vg_values)
-        p = (; params..., overrides..., n0, n = n0 + Δn, Vg = Vg_value, µN = µ_value)
-        free_energies = [free_energy(hN(; p..., ϕ = ϕ_value), solver) for ϕ_value in phases]
-        A = [(2 / npoints) * sum(free_energies .* cos.(k .* phases)) for k in harmonics]
-        B = [(2 / npoints) * sum(free_energies .* sin.(k .* phases)) for k in harmonics]
-        I_sin = -2 .* harmonics .* A
-        I_cos = 2 .* harmonics .* B
-        amplitudes[iVg, iµ, :] .= hypot.(I_sin, I_cos)
-    end
-    I_odd = dropdims(sum(amplitudes[:, :, isodd.(harmonics)], dims = 3), dims = 3)
-    I_even = dropdims(sum(amplitudes[:, :, iseven.(harmonics)], dims = 3), dims = 3)
-
-    common = (; xlabel = L"V_g \text{ [meV]}", ylabel = L"\mu \text{ [meV]}", xlabelsize = 16, ylabelsize = 16)
-
-    colorrange = (0.0, max(maximum(I_odd), maximum(I_even)))
-    fig = Figure(size = (1000, 450))
-    Label(fig[0, 1:3], @sprintf("Δn = %g", Δn); fontsize = 16)
-    ax1 = Axis(fig[1, 1]; title = L"\sum_{k \text{ odd}} |I_k| \;\; (2e, 6e, \ldots)", common...)
-    hm = heatmap!(ax1, Vg_values, µ_values, I_odd; colorrange)
-    ax2 = Axis(fig[1, 2]; title = L"\sum_{k \text{ even}} |I_k| \;\; (4e, 8e, \ldots)", common...)
-    heatmap!(ax2, Vg_values, µ_values, I_even; colorrange)
-    hideydecorations!(ax2, ticks = false, ticklabels = false)
-    linkaxes!(ax1, ax2)
-    Colorbar(fig[1, 3], hm; label = L"|I| \text{ [meV]}")
-    display(fig)
-    savepath === nothing || save(savepath, fig)
-
-    return (; fig, Vg_values, µ_values, amplitudes, I_odd, I_even)
-end
-
 # Ground state F₀ and first excited state F₁ = F₀ + εt (one quasiparticle in the tracked level), both from the same
-# dense spectrum. Currents from the harmonics of each, converged separately by grid doubling. Single case (Δn, Vg, …), no normalization
-function plot_free_energy_current(hN, case; n0 = 0, cpr_settings, φsel = π/2, nplot = 400,
-        savepath = nothing, params...)
-    (; N0, N_max, tol_alias, tol_tail) = cpr_settings
-    phases = 2π .* (0:N_max-1) ./ N_max
-    φplot = range(0, 2π, length = nplot)
+# dense spectrum. Currents from the tabulated CPR of each (finite differences, interpolated). Single case (Δn, Vg, …), no normalization.
+# The odd branch has period 2πν, ν = odd_period_factor (4π for mult = 1, else 2π); everything is over 0 … 2πν
+function free_energy_current_data(hN2, case; n0 = 0, cpr_settings, φsel = π/2, nplot = 400, params...)
+    (; N_max) = cpr_settings
+    tol = get(cpr_settings, :tol_cpr, 1e-3)
 
     overrides = Base.structdiff(case, NamedTuple{(:Δn,)})
     p = (; params..., overrides..., n0, n = n0 + case.Δn)
-    F_vals, εt, _ = spectrum_F0_tracked(hN, N_max, p; φsel)
+    ν = odd_period_factor(p)
+    phases = tracked_phases(N_max, ν)   # same grid as spectrum_F0_tracked
+    φ0 = first(phases)
+    φplot = range(0, 2π * ν, length = ν * nplot)
+    F_vals, εt, _ = spectrum_F0_tracked(hN2, N_max, p; φsel, ν, nev = get(cpr_settings, :nev, 40))
     F1_vals = F_vals .+ εt
-    h0 = converged_harmonics(F_vals, N0, tol_alias, tol_tail; name = "F₀")
-    h1 = converged_harmonics(F1_vals, N0, tol_alias, tol_tail; name = "F₁")
-    I_vals = [cpr_value(φ, h0.s, h0.c) for φ in φplot]
-    I1_vals = [cpr_value(φ, h1.s, h1.c) for φ in φplot]
+    cpr0 = cpr_table_checked(F_vals[1:N_max], 2π, tol; φ0, name = "F₀")      # F₀ is 2π-periodic
+    cpr1 = cpr_table_checked(F1_vals, 2π * ν, tol; φ0, name = "F₁")
+    I_vals = [cpr_value(φ, cpr0) for φ in φplot]
+    I1_vals = [cpr_value(φ, cpr1) for φ in φplot]
+    return (; phases, φplot, F_vals, F1_vals, I_vals, I1_vals, cpr0, cpr1, ν)
+end
 
-    common = (; xlabelsize = 16, ylabelsize = 16, xgridvisible = false)
+# F on the grid (wrapped periodically on both ends, so it spans 0 … 2πν on the shifted grid) into axF and I from the
+# CPR tables into axI; ground state solid, first excited dashed
+function free_energy_current_lines!(axF, axI, d; color = Makie.wong_colors()[1])
+    closed(v) = [last(v); v; first(v)]
+    φF = [last(d.phases) - 2π * d.ν; d.phases; first(d.phases) + 2π * d.ν]
+    Fmin = minimum(d.F_vals)
+    lines!(axF, φF, closed(d.F_vals .- Fmin); color, linewidth = 2)
+    lines!(axF, φF, closed(d.F1_vals .- Fmin); color, linewidth = 2, linestyle = :dash)
+    hlines!(axI, 0; color = :black, linewidth = 0.5)
+    lines!(axI, d.φplot, d.I_vals; color, linewidth = 2)
+    lines!(axI, d.φplot, d.I1_vals; color, linewidth = 2, linestyle = :dash)
+    linkxaxes!(axF, axI)
+    xlims!(axI, 0, 2π * d.ν)
+    hidexdecorations!(axF, grid = false)
+end
+
+parity_legend!(pos) = Legend(pos,
+    [LineElement(; color = :black, linewidth = 2), LineElement(; color = :black, linewidth = 2, linestyle = :dash)],
+    ["Even fermion parity", "Odd fermion parity"]; orientation = :horizontal, labelsize = 11, framevisible = false)
+
+# x ticks of a 0 … 2πν axis: every π/2 up to 2π, every π beyond
+φ_ticks(ν) = ν == 1 ? πhalf_ticks(2) : πticks(2ν)
+
+FI_LABELS = (; F = L"F - F_\text{min} \text{ [meV]}", I = L"I \text{ [meV]}")
+FI_AXIS = (; xlabelsize = 16, ylabelsize = 16, xgridvisible = false)
+
+function plot_free_energy_current(hN2, case; savepath = nothing, kw...)
+    d = free_energy_current_data(hN2, case; kw...)
     fig = Figure(size = (600, 600))
-    ax1 = Axis(fig[1, 1]; ylabel = L"F - F_\text{min} \text{ [meV]}", common...)
-    ax2 = Axis(fig[2, 1];
-        xlabel = L"\varphi", ylabel = L"I \text{ [meV]}",
-        xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]), common...)
-
-    # F on the grid (closed at ϕ = 2π), I from the harmonics; ground state solid, first excited state dashed
-    closed(v) = [v; first(v)]
-    color = Makie.wong_colors()[1]
-    Fmin = minimum(F_vals)
-    lines!(ax1, [phases; 2π], closed(F_vals .- Fmin); color, linewidth = 2)
-    lines!(ax1, [phases; 2π], closed(F1_vals .- Fmin); color, linewidth = 2, linestyle = :dash)
-    lines!(ax2, φplot, I_vals; color, linewidth = 2)
-    lines!(ax2, φplot, I1_vals; color, linewidth = 2, linestyle = :dash)
-
-    hlines!(ax2, 0; color = :black, linewidth = 0.5)
-    linkxaxes!(ax1, ax2)
-    xlims!(ax2, 0, 2π)
-    hidexdecorations!(ax1, grid = false)
-    Legend(fig[3, 1], [LineElement(; color = :black, linewidth = 2), LineElement(; color = :black, linewidth = 2, linestyle = :dash)],
-        ["Even fermion parity", "Odd fermion parity"]; orientation = :horizontal, labelsize = 11, framevisible = false)
+    ax1 = Axis(fig[1, 1]; ylabel = FI_LABELS.F, FI_AXIS...)
+    ax2 = Axis(fig[2, 1]; xlabel = L"\varphi", ylabel = FI_LABELS.I, xticks = πhalf_ticks(2d.ν), FI_AXIS...)
+    free_energy_current_lines!(ax1, ax2, d)
+    parity_legend!(fig[3, 1])
     rowgap!(fig.layout, 5)
     display(fig)
     savepath === nothing || save(savepath, fig)
-    return (; fig, phases, φplot, F_vals, F1_vals, I_vals, I1_vals, h0, h1)
+    return (; fig, d...)
+end
+
+# F and I of several cases side by side, one column each (own φ range 0 … 2πν), from free_energy_current_data
+function plot_free_energy_current_cases(datas, titles; panel_labels = false, savepath = nothing)
+    n = length(datas)
+    fig = Figure(size = (380n + 90, 560))
+    for (j, (d, title)) in enumerate(zip(datas, titles))
+        axF = Axis(fig[1, j]; title, ylabel = j == 1 ? FI_LABELS.F : "", FI_AXIS...)
+        axI = Axis(fig[2, j]; xlabel = L"\varphi", ylabel = j == 1 ? FI_LABELS.I : "", xticks = φ_ticks(d.ν), FI_AXIS...)
+        free_energy_current_lines!(axF, axI, d; color = Makie.wong_colors()[j])
+        if panel_labels
+            panel_label!(fig, 1, j, j)
+            panel_label!(fig, 2, j, n + j)
+        end
+    end
+    parity_legend!(fig[3, 1:n])
+    rowgap!(fig.layout, 5)
+    display(fig)
+    savepath === nothing || save(savepath, fig; px_per_unit = 2)
+    return fig
+end
+
+# x ticks at multiples of π/2 from 0 to nπ: "0", "π/2", "π", "3π/2", "2π", …
+πhalf_ticks(n) = (m = round(Int, 2n);
+    (π/2 .* (0:m), [k == 0 ? "0" : k == 1 ? "π/2" : k == 2 ? "π" : iseven(k) ? "$(k ÷ 2)π" : "$(k)π/2" for k in 0:m]))
+# x ticks at multiples of π from 0 to nπ: "0", "π", "2π", …
+πticks(n) = (m = round(Int, n); (π .* (0:m), [k == 0 ? "0" : k == 1 ? "π" : "$(k)π" for k in 0:m]))
+
+# Panel label "a)", "b)", … (k = 1, 2, …) in the top-left corner of the layout cell fig[r, c]
+panel_label!(fig, r, c, k; fontsize = 18) = Label(fig[r, c, TopLeft()], string('a' + k - 1, ")"); fontsize,
+    font = :bold, halign = :right, padding = (0, 8, 4, 0))
+
+# Gate profile V_g cos(mult θ) (θ = position angle around the ring; φ is the phase difference) as a LaTeX string,
+# for titles and Shapiro grid labels: cos(θ), cos(2θ), …
+gate_label(mult) = mult == 1 ? "\$V_g \\propto \\cos(\\theta)\$" : "\$V_g \\propto \\cos($(mult)\\theta)\$"
+
+# ---------------------------------------------------------------------
+# Bands against ϕ with tracked subbands and their |ψ|² along the ring (from test.jl)
+# ---------------------------------------------------------------------
+# Index of the subband of b that holds the lowest positive level at φ
+function lowest_positive_subband(b, φ)
+    εmin(x) = minimum(filter(>(0), real.(Quantica.energy.(Quantica.vertices(x)))); init = Inf)
+    s = b[(φ, :)]
+    return argmin(k -> εmin(s[k]), eachindex(s))
+end
+
+# |ψ|² per site from BdG states (norb orbitals per site: 2 = e↑, h↓ for hN2; 4 = e↑, e↓, h↑, h↓ for hN), one column per state
+site_density(ψs, norb = 2) = dropdims(sum(reshape(abs2.(ψs), norb, :, size(ψs, 2)), dims = 1), dims = 1)
+
+# |ψ|² per site along subband j of b, read from its band vertices (summed over the degenerate states), sorted by φ
+function subband_density(b, j)
+    vs = Quantica.vertices(Quantica.subbands(b)[j])
+    φ = [Quantica.base_coordinates(v)[1] for v in vs]
+    ρ = reduce(hcat, [vec(sum(site_density(Quantica.states(v)), dims = 2)) / Quantica.degeneracy(v) for v in vs])
+    p = sortperm(φ)
+    return φ[p], ρ[:, p]
+end
+
+# Bands of b against ϕ (gray) with the subbands js highlighted in colors, and next to it |ψ|² per site of those subbands
+# along ϕ (overlaid, each colormap fading to transparent at zero density). ϕ axis 0 … 4π/mult, energy window ±elim
+function plot_bands_density(b, js, colors, mult; elim = 0.5, panel_labels = false, savepath = nothing)
+    φmax = 4π / mult
+    fig = Figure(size = (1200, 520))
+    Label(fig[0, 1:2+length(js)], Makie.LaTeXString(gate_label(mult)); fontsize = 20)
+    common = (; xlabel = L"\varphi", xlabelsize = 18, ylabelsize = 18, titlesize = 20, xticks = πticks(round(Int, φmax / π)))
+
+    ax = Axis(fig[1, 1]; ylabel = L"\varepsilon \text{ [meV]}", common...)
+    plotbands!(ax, b; color = :gray75, hide = :nodes)
+    for (j, c) in zip(js, colors)
+        plotbands!(ax, b[[j]]; color = c, size = 3, hide = :nodes)
+    end
+    limits!(ax, 0, φmax, -elim, elim)
+
+    ax2 = Axis(fig[1, 2]; ylabel = "site", title = L"|\psi|^2", common...)
+    for (i, (j, c)) in enumerate(zip(js, colors))
+        φ, ρ = subband_density(b, j)
+        hm = heatmap!(ax2, φ, 1:size(ρ, 1), permutedims(ρ); colormap = [(c, 0.0), (c, 1.0)])
+        Colorbar(fig[1, 2+i], hm)
+    end
+    xlims!(ax2, 0, φmax)
+    colsize!(fig.layout, 1, Relative(0.4))
+    panel_labels && (panel_label!(fig, 1, 1, 1); panel_label!(fig, 1, 2, 2))
+    display(fig)
+    savepath === nothing || save(savepath, fig; px_per_unit = 2)
+    return fig
 end
 
 # ---------------------------------------------------------------------
@@ -235,31 +296,50 @@ function latex_num(x; digits = 3)
     return string(m[1], " \\times 10^{", m[2] == "-" ? "-" : "", m[3], "}")
 end
 
+# A Shapiro result restricted to lo ≤ i_dc ≤ hi (normalized units): idcs, V and hysteresis rows, and the dV/dI rows
+# between the kept bias points
+function crop_idc(r, (lo, hi))
+    sel = findfirst(≥(lo), r.idcs):findlast(≤(hi), r.idcs)
+    length(sel) ≥ 2 || throw(ArgumentError("idc_lims = ($lo, $hi) keeps fewer than two i_dc points"))
+    dsel = first(sel):last(sel)-1
+    return merge(r, (; idcs = r.idcs[sel], V_up = r.V_up[sel, :], V_down = r.V_down[sel, :], hyst = r.hyst[sel, :],
+        dVdI_up = r.dVdI_up[dsel, :], dVdI_down = r.dVdI_down[dsel, :]))
+end
+
 # Shapiro grid, µN rows × Δn columns (rows / columns can instead be named by strings, e.g. ["even", "odd"]):
 #   dV/dI maps of the up (switching) sweep, i_dc horizontal, i_ac vertical
 #   hysteresis maps |V_up − V_down| (only if any case is hysteretic)
 #   line cuts V/(hf/2e) = ⟨v⟩/Ω against i_dc at iac_cut, all µN of a Δn in one panel (opacity cut_alpha, so overlaps show)
-#   step histogram of each cut: i_dc width per ⟨v⟩/Ω bin, so plateaus are peaks
 # units = :normalized → currents in units of each case's I_c
 # units = :physical   → currents in µA (i × I_c) on shared axes (one sample, one microwave power); iac_cut in µA
+# idc_lims = (lo, hi) → zoom: only i_dc in [lo, hi] (plotted units) is shown, also in the cuts
+# iac_cut: one value, or one per column
+# shared_V = false → each column has its own V/(hf/2e) range in the cuts (columns with different Ω)
+# panel_labels = true → a), b), … row by row (maps, then cuts)
 function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalized, colorrange = (0, 2),
-        colormap = :Blues, binwidth = 0.02, cut_alpha = 0.7, savepath = nothing)
+        colormap = :Blues, cut_alpha = 0.7, idc_lims = nothing, shared_V = true, panel_labels = false, savepath = nothing)
     µs, Δns = [µs...], [Δns...]
     results = reshape(results, length(µs), length(Δns))
-    nr, nc = size(results)
     physical = units == :physical
     scale(r) = physical ? 1e6 * r.Ic_A : 1.0                           # normalized i → plotted current
-    jac = map(r -> argmin(abs.(r.iacs .* scale(r) .- iac_cut)), results)  # cut column of each case
+    idc_lims === nothing || (results = map(r -> crop_idc(r, idc_lims ./ scale(r)), results))
+    nr, nc = size(results)
+    cuts = iac_cut isa Number ? fill(iac_cut, nc) : collect(iac_cut)
+    length(cuts) == nc || throw(ArgumentError("iac_cut needs one value or one per column ($nc)"))
+    jac = [argmin(abs.(results[i, j].iacs .* scale(results[i, j]) .- cuts[j])) for i in 1:nr, j in 1:nc]  # cut column of each case
     w_up(k) = results[k].V_up[:, jac[k]] ./ results[k].Ω
     w_dn(k) = results[k].V_down[:, jac[k]] ./ results[k].Ω
     colors = Makie.wong_colors()                                      # fixed order: µN index → color
     hysteretic = any(r -> maximum(r.hyst) > 1e-3 * r.Ω, results)
     nmap = hysteretic ? 2nr : nr
-    Vmax = ceil(maximum(k -> max(maximum(w_up(k)), maximum(w_dn(k))), eachindex(results)))
-    Vmin = min(0.0, floor(minimum(k -> min(minimum(w_up(k)), minimum(w_dn(k))), eachindex(results))))
-    # major ticks every 1 (labels thinned for wide ranges), minor grid at 0.5
-    Vlab = max(1, ceil(Int, (Vmax - Vmin) / 12))
-    vticks = (Vmin:Vmax, [rem(round(Int, k), Vlab) == 0 ? @sprintf("%d", k) : "" for k in Vmin:Vmax])
+    # V/(hf/2e) range of the cases ks: major ticks every 1 (labels thinned for wide ranges), minor grid at 0.5
+    function V_range(ks)
+        Vmax = ceil(maximum(k -> max(maximum(w_up(k)), maximum(w_dn(k))), ks))
+        Vmin = min(0.0, floor(minimum(k -> min(minimum(w_up(k)), minimum(w_dn(k))), ks)))
+        Vlab = max(1, ceil(Int, (Vmax - Vmin) / 12))
+        return Vmin, Vmax, (Vmin:Vmax, [rem(round(Int, k), Vlab) == 0 ? @sprintf("%d", k) : "" for k in Vmin:Vmax])
+    end
+    V_ranges = shared_V ? fill(V_range(eachindex(results)), nc) : [V_range(LinearIndices(results)[:, j]) for j in 1:nc]
     tex(str) = Makie.LaTeXString(str)
     Idc_label, Iac_label = physical ? (L"I_\text{dc} \; [\mu\text{A}]", L"I_\text{ac} \; [\mu\text{A}]") :
         (L"I_\text{dc}/I_c", L"I_\text{ac}/I_c")
@@ -271,7 +351,7 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
             Axis = (; xgridvisible = false, ygridvisible = false, xticksmirrored = true, yticksmirrored = true,
                 xtickalign = 1, ytickalign = 1, xminorticksvisible = true, yminorticksvisible = true, xminortickalign = 1,
                 yminortickalign = 1, titlefont = :regular, titlesize = 15)) do
-        fig = Figure(size = (400 * nc + 110, 300 * nmap + 560), figure_padding = (10, 15, 10, 10))
+        fig = Figure(size = (400 * nc + 110, 300 * nmap + 380), figure_padding = (10, 15, 10, 10))
         # Ω and βc differ per case with scaling = :physical: in the header only if common to all cases, else per map
         (; Ω, βc) = first(results)
         common_Ω = all(r -> r.Ω == Ω, results)
@@ -283,7 +363,6 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
         hm = hh = nothing
         map_axes = Axis[]
         cut_axes = Axis[]
-        hist_axes = Axis[]
         for (j, Δn) in enumerate(Δns)
             for (i, µ) in enumerate(µs)
                 r = results[i, j]
@@ -311,16 +390,13 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
                 end
             end
             Label(fig[1, j, Top()], tex(collabel(Δn)); fontsize = 17, padding = (0, 0, 28, 0))
+            Vmin, Vmax, vticks = V_ranges[j]
+            Vlabels = j == 1 || !shared_V
 
             # line cuts: all µN for this Δn in one panel
-            axc = Axis(fig[nmap + 1, j]; xlabel = Idc_label, ylabel = j == 1 ? V_label : "",
-                yticks = vticks, yminorticks = Vmin:0.5:Vmax, yticklabelsvisible = j == 1,
+            axc = Axis(fig[nmap + 1, j]; xlabel = Idc_label, ylabel = Vlabels ? V_label : "",
+                yticks = vticks, yminorticks = Vmin:0.5:Vmax, yticklabelsvisible = Vlabels,
                 ygridvisible = true, ygridcolor = (:black, 0.15), yminorgridvisible = true, yminorgridcolor = (:black, 0.06))
-            # step histogram: i_dc width falling in each ⟨v⟩/Ω bin (bins centred on multiples of binwidth)
-            axs = Axis(fig[nmap + 2, j]; xlabel = V_label, ylabel = j == 1 ? (physical ? L"\Delta I_\text{dc} \; [\mu\text{A}]" :
-                L"\Delta I_\text{dc}/I_c") : "", xticks = vticks, xminorticks = Vmin:0.5:Vmax,
-                xgridvisible = true, xgridcolor = (:black, 0.15), xminorgridvisible = true, xminorgridcolor = (:black, 0.06))
-            edges = (Vmin - binwidth / 2):binwidth:(Vmax + binwidth / 2)
             for (i, µ) in enumerate(µs)
                 r = results[i, j]
                 k = LinearIndices(results)[i, j]
@@ -328,27 +404,18 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
                 lines!(axc, idcs, w_up(k); color = (colors[i], hysteretic ? 0.5 : cut_alpha), linewidth = 2.5)
                 # down sweep thin and opaque on top of the translucent up sweep, so it stays visible where they overlap
                 hysteretic && lines!(axc, idcs, w_dn(k); color = colors[i], linewidth = 1.3, linestyle = :dash)
-                for (w, style) in ((w_up(k), :solid), (w_dn(k), :dash))
-                    style == :dash && !hysteretic && continue
-                    widths = zeros(length(edges) - 1)
-                    for x in w
-                        b = searchsortedlast(edges, x)
-                        1 ≤ b < length(edges) && (widths[b] += step(idcs))
-                    end
-                    stairs!(axs, collect(edges), [widths; widths[end]]; step = :post, color = colors[i],
-                        linewidth = style == :solid ? 1.8 : 1.2, linestyle = style)
-                end
             end
             xlims!(axc, extrema(results[1, j].idcs .* scale(results[1, j]))...)
             ylims!(axc, Vmin - 0.1, Vmax + 0.1)
-            xlims!(axs, Vmin - 0.1, Vmax + 0.1)
-            ylims!(axs, 0, nothing)
             push!(cut_axes, axc)
-            push!(hist_axes, axs)
         end
         linkaxes!(map_axes...)
-        linkaxes!(cut_axes...)
-        linkaxes!(hist_axes...)
+        shared_V && linkaxes!(cut_axes...)
+        if panel_labels
+            for row in 1:nmap+1, j in 1:nc
+                panel_label!(fig, row, j, (row - 1) * nc + j)
+            end
+        end
 
         Colorbar(fig[1:nr, nc + 1], hm; label = L"\mathrm{d}V/\mathrm{d}I \; [R]", width = 12, ticksize = 4)
         hysteretic && Colorbar(fig[nr+1:2nr, nc + 1], hh; label = L"|V_\uparrow - V_\downarrow| / (hf/2e)", width = 12, ticksize = 4)
@@ -362,14 +429,18 @@ function plot_shapiro_grid(results, µs, Δns; iac_cut = 1.0, units = :normalize
             append!(entries, [LineElement(color = (:gray30, 0.5), linewidth = 2.5), LineElement(color = :gray30, linewidth = 1.3, linestyle = :dash)])
             append!(labels, ["sweep up (switching)", "sweep down (retrapping)"])
         end
-        iac_cuts = unique(round.([r.iacs[jac[k]] * scale(r) for (k, r) in pairs(results)]; sigdigits = 3))
-        cut_text = physical ? @sprintf("line cut at \$I_\\text{ac} = %s\\;\\mu\$A", join(latex_num.(iac_cuts), ", ")) :
-            @sprintf("line cut at \$I_\\text{ac}/I_c = %s\$", join(latex_num.(iac_cuts), ", "))
-        Label(fig[nmap + 1, 1:nc, Top()], tex(cut_text); padding = (0, 0, 6, 0), fontsize = 14, halign = :left, tellwidth = false)
-        isempty(entries) || Legend(fig[nmap + 3, 1:nc], entries, labels; orientation = :horizontal,
+        # line cut label: one over all columns if they share the cut, else one per column
+        cut_text(ks) = (c = unique(round.([results[k].iacs[jac[k]] * scale(results[k]) for k in ks]; sigdigits = 3));
+            physical ? @sprintf("line cut at \$I_\\text{ac} = %s\\;\\mu\$A", join(latex_num.(c), ", ")) :
+            @sprintf("line cut at \$I_\\text{ac}/I_c = %s\$", join(latex_num.(c), ", ")))
+        label_spans = allequal(cuts) ? [1:nc] : [j:j for j in 1:nc]
+        for js in label_spans
+            Label(fig[nmap + 1, js, Top()], tex(cut_text(vec(LinearIndices(results)[:, js])));
+                padding = (0, 0, 6, 0), fontsize = 14, halign = :left, tellwidth = false)
+        end
+        isempty(entries) || Legend(fig[nmap + 2, 1:nc], entries, labels; orientation = :horizontal,
             framevisible = false, labelsize = 13, tellheight = true, tellwidth = false)
-        rowsize!(fig.layout, nmap + 1, Relative(0.8 / (nmap + 2)))
-        rowsize!(fig.layout, nmap + 2, Relative(0.6 / (nmap + 2)))
+        rowsize!(fig.layout, nmap + 1, Relative(0.8 / (nmap + 1)))
         rowgap!(fig.layout, 8)
         colgap!(fig.layout, 32)
         rowgap!(fig.layout, nmap, 16)
